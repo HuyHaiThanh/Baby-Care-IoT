@@ -10,6 +10,8 @@ import sys
 import argparse
 import logging
 import queue
+import socket
+import netifaces
 
 # Import các module tự viết
 from config import PHOTO_INTERVAL, AUDIO_DURATION, ARCHIVE_DIR, DEVICE_NAME, AUDIO_DIR
@@ -32,6 +34,44 @@ running = True
 audio_recorder = None
 crying_event = threading.Event()  # Sự kiện để thông báo khi phát hiện tiếng khóc
 crying_queue = queue.Queue(maxsize=10)  # Hàng đợi cho các đoạn âm thanh có tiếng khóc
+
+def get_ip_addresses():
+    """
+    Lấy danh sách địa chỉ IP của thiết bị (trừ loopback)
+    
+    Returns:
+        dict: Dictionary chứa tên interface và địa chỉ IP
+    """
+    ip_list = {}
+    
+    try:
+        # Sử dụng netifaces để lấy danh sách interfaces mạng
+        interfaces = netifaces.interfaces()
+        
+        for interface in interfaces:
+            # Bỏ qua interface loopback
+            if interface == 'lo':
+                continue
+                
+            ifaddresses = netifaces.ifaddresses(interface)
+            if netifaces.AF_INET in ifaddresses:
+                for link in ifaddresses[netifaces.AF_INET]:
+                    if 'addr' in link:
+                        ip_list[interface] = link['addr']
+    except ImportError:
+        # Nếu không có netifaces, sử dụng socket
+        try:
+            # Kết nối đến Google DNS để lấy IP (không thực sự kết nối)
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip_list["default"] = s.getsockname()[0]
+            s.close()
+        except Exception as e:
+            logger.warning(f"Không thể lấy địa chỉ IP: {e}")
+    except Exception as e:
+        logger.warning(f"Lỗi khi lấy địa chỉ IP: {e}")
+        
+    return ip_list
 
 def capture_photo_thread():
     """Luồng chụp ảnh định kỳ"""
@@ -202,6 +242,19 @@ def start_monitoring():
     # Tạo các thư mục cần thiết
     os.makedirs(ARCHIVE_DIR, exist_ok=True)
     os.makedirs(AUDIO_DIR, exist_ok=True)
+    
+    # Lấy và hiển thị địa chỉ IP
+    ip_addresses = get_ip_addresses()
+    logger.info("\n" + "="*50)
+    logger.info(f"🔔 THÔNG TIN KẾT NỐI CHO CLIENT:")
+    if ip_addresses:
+        for interface, ip in ip_addresses.items():
+            logger.info(f"📱 Địa chỉ IP ({interface}): {ip}")
+            logger.info(f"🌐 HTTP API: http://{ip}:8000")
+            logger.info(f"🔌 WebSocket: ws://{ip}:8765")
+    else:
+        logger.warning("⚠️ Không tìm thấy địa chỉ IP, client có thể không kết nối được!")
+    logger.info("="*50 + "\n")
     
     # Khởi tạo audio recorder với sliding window
     audio_recorder = AudioRecorder(

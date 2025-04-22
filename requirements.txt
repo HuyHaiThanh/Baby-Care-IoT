@@ -4,3 +4,4 @@ websockets>=10.0
 pyaudio>=0.2.11
 Pillow>=8.0.0
 scipy>=1.5.0
+netifaces>=0.11.0
