@@ -2,9 +2,19 @@
 # Cấu hình cho client photo
 
 import os
+import sys
+import argparse
+
+# Xử lý tham số dòng lệnh
+parser = argparse.ArgumentParser(description='Baby Monitor Photo Client')
+parser.add_argument('--server', type=str, default='localhost',
+                    help='Địa chỉ IP của Raspberry Pi server')
+
+# Lấy tất cả các đối số được chuyển cho module này
+args, _ = parser.parse_known_args()
 
 # Thiết lập server
-SERVER_HOST = "localhost"  # Địa chỉ IP của Raspberry Pi 2B, thay đổi theo nhu cầu
+SERVER_HOST = args.server  # Sử dụng giá trị từ tham số hoặc mặc định là localhost
 SERVER_PORT = 8000         # Port cho HTTP API
 WEBSOCKET_URL = f"ws://{SERVER_HOST}:8765"  # WebSocket URL
 

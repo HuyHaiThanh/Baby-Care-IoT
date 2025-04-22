@@ -35,6 +35,8 @@ class PhotoClient:
         self.latest_image_path = None
         self.latest_image_data = None
         self.reconnect_delay = 5  # Thời gian chờ trước khi kết nối lại (giây)
+        self.last_error_message = None  # Biến để theo dõi thông báo lỗi gần nhất
+        self.last_error_time = None  # Thời gian nhận được thông báo lỗi gần nhất
 
     async def connect(self):
         """Kết nối tới WebSocket server"""
@@ -163,7 +165,25 @@ class PhotoClient:
                     
                     elif data.get("type") == "error":
                         # Thông báo lỗi
-                        logger.error(f"Server báo lỗi: {data.get('message', '')}")
+                        error_message = data.get('message', '')
+                        
+                        # Kiểm tra và giảm bớt thông báo lỗi trùng lặp
+                        current_time = time.time()
+                        
+                        # Nếu là lỗi "Không có file hình ảnh nào"
+                        if "Không có file hình ảnh nào" in error_message:
+                            # Chỉ log lỗi này nếu là lần đầu hoặc đã qua 60 giây kể từ lần cuối
+                            if self.last_error_message != error_message or \
+                               self.last_error_time is None or \
+                               (current_time - self.last_error_time) > 60:
+                                logger.error(f"Server báo lỗi: {error_message}")
+                                self.last_error_message = error_message
+                                self.last_error_time = current_time
+                        else:
+                            # Với các lỗi khác, luôn log
+                            logger.error(f"Server báo lỗi: {error_message}")
+                            self.last_error_message = error_message
+                            self.last_error_time = current_time
                 
                 except json.JSONDecodeError:
                     logger.warning(f"Nhận được tin nhắn không phải JSON")
