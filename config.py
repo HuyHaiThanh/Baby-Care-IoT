@@ -16,6 +16,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PHOTO_DIR = os.path.join(BASE_DIR, "camera_data/photos")
 AUDIO_DIR = os.path.join(BASE_DIR, "camera_data/audio")
 ARCHIVE_DIR = os.path.join(BASE_DIR, "camera_data/archive")
+TEMP_DIR = os.path.join(BASE_DIR, "camera_data/temp")  # Thư mục lưu trữ tạm thời
 
 # Khoảng thời gian giữa các lần chụp ảnh và ghi âm (giây)
 PHOTO_INTERVAL = 10  # 10 giây/lần
