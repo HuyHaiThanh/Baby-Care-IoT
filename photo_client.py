@@ -66,27 +66,42 @@ class PhotoClient:
         }
         await self.websocket.send(json.dumps(auth_message))
 
-    async def request_latest_image(self):
-        """Gửi yêu cầu lấy ảnh mới nhất từ server"""
+    async def request_latest_image(self, quality="high"):
+        """
+        Gửi yêu cầu lấy ảnh mới nhất từ server
+        
+        Args:
+            quality: Chất lượng ảnh yêu cầu ("high", "medium", "low")
+        """
         if not self.connected:
             logger.warning("Không thể gửi yêu cầu: Chưa kết nối tới server")
             return False
             
         try:
-            # Tạo tin nhắn yêu cầu - thử thêm các tùy chọn path khác nhau
+            # Tạo tin nhắn yêu cầu với nhiều tùy chọn
             request_message = {
                 "action": "request_image",
                 "timestamp": datetime.datetime.now().isoformat(),
+                "quality": quality,  # Thêm tùy chọn chất lượng ảnh
                 "paths": [
+                    # Thêm nhiều đường dẫn có thể để server tìm
+                    "/home/pi/Baby-Care-IoT/camera_data/photos",
                     "camera_data/photos",
-                    "/home/pi/Baby-Care-IoT/camera_data/photos"
+                    "../camera_data/photos"
                 ]
             }
             
-            # Gửi yêu cầu
-            await self.websocket.send(json.dumps(request_message))
-            logger.info("Đã gửi yêu cầu lấy ảnh mới nhất")
+            # Gửi yêu cầu với timeout
+            await asyncio.wait_for(
+                self.websocket.send(json.dumps(request_message)), 
+                timeout=5.0
+            )
+            
+            logger.info(f"Đã gửi yêu cầu lấy ảnh mới nhất (chất lượng: {quality})")
             return True
+        except asyncio.TimeoutError:
+            logger.error("Hết thời gian chờ khi gửi yêu cầu")
+            return False
         except Exception as e:
             logger.error(f"Lỗi khi gửi yêu cầu: {e}")
             self.connected = False
@@ -148,18 +163,42 @@ class PhotoClient:
             
         try:
             while True:
-                # Nhận tin nhắn từ server
-                message = await self.websocket.recv()
+                # Nhận tin nhắn từ server với timeout
+                try:
+                    message = await asyncio.wait_for(self.websocket.recv(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Không nhận được phản hồi từ server trong 30 giây, kiểm tra kết nối...")
+                    # Gửi ping để kiểm tra kết nối
+                    try:
+                        pong_waiter = await self.websocket.ping()
+                        await asyncio.wait_for(pong_waiter, timeout=5.0)
+                        logger.info("Server vẫn hoạt động, tiếp tục lắng nghe...")
+                        continue
+                    except:
+                        logger.error("Server không phản hồi ping, kết nối có thể đã mất")
+                        self.connected = False
+                        break
                 
                 try:
+                    # Đo thời gian xử lý để phát hiện vấn đề hiệu suất
+                    start_time = time.time()
+                    
                     # Giải mã JSON
                     data = json.loads(message)
                     
                     # Xử lý các loại tin nhắn
                     if data.get("type") == "image":
                         # Nhận được dữ liệu ảnh
-                        logger.info(f"Nhận được ảnh: {data.get('file_name', 'unknown')}")
-                        await self._save_image(data.get("data"), data.get("file_name"))
+                        file_name = data.get('file_name', 'unknown')
+                        logger.info(f"Nhận được ảnh: {file_name} - Kích thước dữ liệu: {len(message) // 1024} KB")
+                        
+                        # Lưu ảnh trong task riêng biệt để không chặn luồng chính
+                        asyncio.create_task(self._save_image(data.get("data"), file_name))
+                        
+                        # Báo cáo thời gian xử lý
+                        process_time = time.time() - start_time
+                        if process_time > 1.0:
+                            logger.warning(f"Xử lý ảnh mất nhiều thời gian: {process_time:.2f} giây")
                     
                     elif data.get("type") == "connection":
                         # Thông báo kết nối
@@ -167,15 +206,22 @@ class PhotoClient:
                     
                     elif data.get("type") == "error":
                         # Thông báo lỗi
-                        logger.error(f"Server báo lỗi: {data.get('message', '')}")
+                        error_msg = data.get('message', '')
+                        logger.error(f"Server báo lỗi: {error_msg}")
+                        
+                        # Nếu không có file ảnh, thử gửi lại yêu cầu với các đường dẫn thay thế
+                        if "Không có file hình ảnh" in error_msg:
+                            logger.info("Thử gửi lại yêu cầu với tùy chọn khác...")
+                            # Thử với chất lượng medium rồi low nếu không có ảnh
+                            await self.request_latest_image(quality="medium")
                 
                 except json.JSONDecodeError:
                     logger.warning(f"Nhận được tin nhắn không phải JSON")
                 except Exception as e:
                     logger.error(f"Lỗi xử lý tin nhắn: {e}")
                 
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("Kết nối WebSocket bị đóng")
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.warning(f"Kết nối WebSocket bị đóng: {e}")
             self.connected = False
         except Exception as e:
             logger.error(f"Lỗi khi lắng nghe tin nhắn: {e}")
@@ -183,20 +229,43 @@ class PhotoClient:
 
     async def run(self):
         """Chạy client và tự động kết nối lại nếu mất kết nối"""
+        retry_count = 0
+        max_retries = 5
+        current_quality = "high"  # Bắt đầu với chất lượng cao
+        
         while True:
             if not self.connected:
+                # Tăng số lần thử kết nối
+                retry_count += 1
+                
                 # Thử kết nối lại
-                logger.info(f"Đang kết nối tới server...")
+                logger.info(f"Đang kết nối tới server... (lần thử {retry_count}/{max_retries})")
                 connected = await self.connect()
                 
                 if not connected:
-                    # Nếu không kết nối được, đợi một lúc trước khi thử lại
-                    logger.info(f"Kết nối thất bại. Thử lại sau {self.reconnect_delay} giây...")
-                    await asyncio.sleep(self.reconnect_delay)
+                    # Nếu không kết nối được và đã thử đủ số lần, tăng thời gian chờ
+                    if retry_count >= max_retries:
+                        logger.warning(f"Không thể kết nối sau {max_retries} lần thử. Tăng thời gian chờ.")
+                        await asyncio.sleep(self.reconnect_delay * 2)
+                        retry_count = 0  # Reset số lần thử
+                    else:
+                        # Nếu chưa đủ số lần thử, đợi một lúc trước khi thử lại
+                        logger.info(f"Kết nối thất bại. Thử lại sau {self.reconnect_delay} giây...")
+                        await asyncio.sleep(self.reconnect_delay)
                     continue
-                    
-                # Khi đã kết nối, gửi yêu cầu lấy ảnh mới nhất
-                await self.request_latest_image()
+                
+                # Reset số lần thử khi kết nối thành công
+                retry_count = 0
+                
+                # Khi đã kết nối, gửi yêu cầu lấy ảnh mới nhất với chất lượng hiện tại
+                logger.info(f"Gửi yêu cầu ảnh với chất lượng: {current_quality}")
+                request_success = await self.request_latest_image(quality=current_quality)
+                
+                # Nếu không gửi được yêu cầu, thử lại với chất lượng thấp hơn
+                if not request_success and current_quality == "high":
+                    logger.info("Thử lại với chất lượng trung bình...")
+                    current_quality = "medium"
+                    await self.request_latest_image(quality=current_quality)
             
             try:
                 # Bắt đầu lắng nghe tin nhắn
@@ -206,6 +275,15 @@ class PhotoClient:
             
             # Nếu đến đây, tức là đã mất kết nối
             self.connected = False
+            
+            # Giảm chất lượng ảnh nếu gặp vấn đề kết nối
+            if current_quality == "high":
+                current_quality = "medium"
+                logger.info("Chuyển sang chất lượng ảnh trung bình do kết nối không ổn định")
+            elif current_quality == "medium":
+                current_quality = "low"
+                logger.info("Chuyển sang chất lượng ảnh thấp do kết nối không ổn định")
+            
             logger.info(f"Mất kết nối. Thử kết nối lại sau {self.reconnect_delay} giây...")
             await asyncio.sleep(self.reconnect_delay)
 

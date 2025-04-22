@@ -141,9 +141,21 @@ class PhotoClientGUI:
             command=self.toggle_auto_refresh
         ).pack(side=tk.LEFT, padx=5)
         
+        # Chất lượng ảnh
+        ttk.Label(control_frame, text="Chất lượng:").pack(side=tk.LEFT, padx=(15, 5))
+        self.quality_var = tk.StringVar(value="high")
+        quality_combo = ttk.Combobox(
+            control_frame, 
+            textvariable=self.quality_var,
+            values=["high", "medium", "low"],
+            width=8,
+            state="readonly"
+        )
+        quality_combo.pack(side=tk.LEFT, padx=5)
+        
         # Địa chỉ server
-        ttk.Label(control_frame, text="Địa chỉ server:").pack(side=tk.LEFT, padx=(20, 5))
-        self.server_entry = ttk.Entry(control_frame, width=20)
+        ttk.Label(control_frame, text="Server:").pack(side=tk.LEFT, padx=(15, 5))
+        self.server_entry = ttk.Entry(control_frame, width=15)
         self.server_entry.pack(side=tk.LEFT, padx=5)
         self.server_entry.insert(0, SERVER_HOST)
         
@@ -402,13 +414,28 @@ class PhotoClientGUI:
             self.log("Đã làm mới danh sách ảnh")
     
     def request_latest_image(self):
-        """Yêu cầu ảnh mới nhất từ server"""
+        """Yêu cầu ảnh mới nhất từ server với chất lượng được chọn"""
+        # Lấy chất lượng ảnh từ combobox
+        quality = self.quality_var.get()
+        
+        # Hiển thị thông báo trạng thái
+        self.status_var.set(f"Đang yêu cầu ảnh ({quality})...")
+        self.log(f"Đang yêu cầu ảnh mới từ server với chất lượng: {quality}")
+        
         # Tạo hàm gọi async trong thread chính
         def run_async():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(self.client.request_latest_image())
-            loop.close()
+            try:
+                loop.run_until_complete(self.client.request_latest_image(quality=quality))
+                # Cập nhật UI sau khi gửi yêu cầu
+                self.root.after(0, lambda: self.status_var.set(f"Đang đợi phản hồi từ server..."))
+            except Exception as e:
+                # Cập nhật UI nếu có lỗi
+                self.root.after(0, lambda: self.log(f"Lỗi khi yêu cầu ảnh: {e}"))
+                self.root.after(0, lambda: self.status_var.set("Lỗi kết nối"))
+            finally:
+                loop.close()
         
         # Chạy trong thread riêng để không block UI
         threading.Thread(target=run_async, daemon=True).start()
