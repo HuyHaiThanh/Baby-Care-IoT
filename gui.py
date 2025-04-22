@@ -495,9 +495,10 @@ class PhotoClientGUI:
         # Làm mới danh sách ảnh
         self.load_image_list()
         
-        # Hiển thị thông báo
+        # Hiển thị thông báo chỉ trong panel log mà không hiện hộp thoại
         self.log(f"Đã nhận ảnh mới: {os.path.basename(image_path)}")
-        messagebox.showinfo("Thông báo", f"Đã nhận ảnh mới từ camera: {os.path.basename(image_path)}")
+        # Cập nhật trạng thái
+        self.status_var.set(f"Đã nhận ảnh mới: {os.path.basename(image_path)}")
     
     def log(self, message):
         """Thêm thông điệp vào panel log"""
