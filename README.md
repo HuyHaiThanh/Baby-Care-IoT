@@ -1,6 +1,6 @@
 # Baby-Care-IoT
 
-Hệ thống giám sát trẻ em (Baby Monitor) sử dụng Raspberry Pi với khả năng truyền dữ liệu hình ảnh và âm thanh qua API và WebSocket.
+Hệ thống giám sát trẻ em (Baby Monitor) sử dụng Raspberry Pi với khả năng truyền dữ liệu hình ảnh qua API và WebSocket.
 
 ## Mục lục
 1. [Tổng quan](#tổng-quan)
@@ -14,7 +14,6 @@ Hệ thống giám sát trẻ em (Baby Monitor) sử dụng Raspberry Pi với k
 
 Baby-Care-IoT là một hệ thống giám sát trẻ em sử dụng Raspberry Pi, cho phép:
 - Truyền hình ảnh camera theo thời gian thực
-- Ghi âm và phát hiện tiếng khóc của trẻ
 - Truy cập dữ liệu từ xa thông qua API hoặc WebSocket
 
 ## Yêu cầu hệ thống
@@ -40,7 +39,7 @@ Hệ thống Baby-Care-IoT cung cấp hai cách để kết nối và lấy hìn
 
 ### Kết nối thông qua HTTP API
 
-Hệ thống cung cấp các API endpoint để lấy hình ảnh và âm thanh.
+Hệ thống cung cấp các API endpoint để lấy hình ảnh.
 
 #### Thông tin cơ bản
 - **Base URL**: `http://[địa_chỉ_IP_của_Raspberry_Pi]:8000/api`
@@ -54,7 +53,7 @@ Hệ thống cung cấp các API endpoint để lấy hình ảnh và âm thanh.
    GET /api/status
    ```
 
-2. **Lấy dữ liệu mới nhất (cả hình ảnh và âm thanh)**
+2. **Lấy dữ liệu hình ảnh mới nhất**
    ```
    GET /api/latest
    ```
@@ -64,25 +63,14 @@ Hệ thống cung cấp các API endpoint để lấy hình ảnh và âm thanh.
    GET /api/photo
    ```
 
-4. **Lấy âm thanh mới nhất**
-   ```
-   GET /api/audio
-   ```
-
-5. **Yêu cầu chụp ảnh mới**
+4. **Yêu cầu chụp ảnh mới**
    ```
    GET /api/capture
    ```
 
-6. **Yêu cầu ghi âm mới**
-   ```
-   GET /api/record?duration=5
-   ```
-   - `duration`: Thời gian ghi âm (giây), mặc định là 5 giây
-
 ### Kết nối thông qua WebSocket
 
-Hệ thống cũng hỗ trợ kết nối WebSocket để truyền dữ liệu theo thời gian thực.
+Hệ thống cũng hỗ trợ kết nối WebSocket để truyền dữ liệu hình ảnh theo thời gian thực.
 
 #### Thông tin cơ bản
 - **WebSocket URL**: `ws://[địa_chỉ_IP_của_Raspberry_Pi]:8765`
@@ -144,14 +132,7 @@ File `photo_client.py` trong dự án này cung cấp một client mẫu để k
    - `medium` - Chất lượng trung bình, kích thước giảm 50%
    - `low` - Chất lượng thấp, kích thước nhỏ
 
-2. **Gửi yêu cầu lấy âm thanh**:
-   ```json
-   {
-     "action": "request_audio"
-   }
-   ```
-
-3. **Nhận dữ liệu hình ảnh**:
+2. **Nhận dữ liệu hình ảnh**:
    ```json
    {
      "type": "image",
@@ -160,17 +141,6 @@ File `photo_client.py` trong dự án này cung cấp một client mẫu để k
      "device_name": "Baby Monitor Pi",
      "file_name": "photo_20250422_103045.jpg",
      "quality": "high"
-   }
-   ```
-
-4. **Nhận dữ liệu âm thanh**:
-   ```json
-   {
-     "type": "audio",
-     "data": "BASE64_ENCODED_AUDIO_DATA",
-     "timestamp": "2025-04-22T10:30:45.123456", 
-     "device_name": "Baby Monitor Pi",
-     "file_name": "audio_20250422_103045.mp3"
    }
    ```
 
