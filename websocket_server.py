@@ -327,11 +327,8 @@ async def start_server(host='0.0.0.0', port=WEBSOCKET_PORT):
     os.makedirs(AUDIO_DIR, exist_ok=True)
     os.makedirs(PHOTO_DIR, exist_ok=True)
     
-    # Khởi động server với hàm xử lý kết nối chính xác
-    server = await websockets.serve(
-        lambda websocket, path: handle_client(websocket, path),
-        host, port
-    )
+    # Khởi động server với handle_client trực tiếp
+    server = await websockets.serve(handle_client, host, port)
     logger.info(f"WebSocket server đang chạy tại ws://{host}:{port}")
     
     # Khởi động monitor để theo dõi file mới
