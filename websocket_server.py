@@ -85,7 +85,7 @@ async def send_image_data(websocket, image_file_path):
         logger.error(f"Lỗi khi gửi dữ liệu hình ảnh: {e}")
         return False
 
-async def handle_client(websocket, path):
+async def handle_client(websocket, path=None):
     """Xử lý kết nối từ client"""
     # Lưu client vào danh sách kết nối
     connected_clients.add(websocket)
