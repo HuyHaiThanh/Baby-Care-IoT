@@ -73,10 +73,14 @@ class PhotoClient:
             return False
             
         try:
-            # Tạo tin nhắn yêu cầu
+            # Tạo tin nhắn yêu cầu - thử thêm các tùy chọn path khác nhau
             request_message = {
                 "action": "request_image",
-                "timestamp": datetime.datetime.now().isoformat()
+                "timestamp": datetime.datetime.now().isoformat(),
+                "paths": [
+                    "camera_data/photos",
+                    "/home/pi/Baby-Care-IoT/camera_data/photos"
+                ]
             }
             
             # Gửi yêu cầu
