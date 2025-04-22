@@ -2,7 +2,6 @@
 # Cấu hình cho client photo
 
 import os
-import sys
 import argparse
 
 # Xử lý tham số dòng lệnh
@@ -14,7 +13,7 @@ parser.add_argument('--server', type=str, default='localhost',
 args, _ = parser.parse_known_args()
 
 # Thiết lập server
-SERVER_HOST = args.server  # Sử dụng giá trị từ tham số hoặc mặc định là localhost
+SERVER_HOST = args.server  # Địa chỉ IP của Raspberry Pi 2B, thay đổi theo nhu cầu
 SERVER_PORT = 8000         # Port cho HTTP API
 WEBSOCKET_URL = f"ws://{SERVER_HOST}:8765"  # WebSocket URL
 
@@ -30,7 +29,7 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # Cấu hình hiển thị
 WINDOW_TITLE = "Baby Monitor - Photo Client"
-WINDOW_SIZE = (800, 600)
+WINDOW_SIZE = (1024, 768)  # Tăng kích thước từ (800, 600) lên (1024, 768)
 
 # Cấu hình tải ảnh
 AUTO_REFRESH = True  # Tự động làm mới ảnh

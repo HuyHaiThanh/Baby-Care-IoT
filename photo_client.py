@@ -35,8 +35,6 @@ class PhotoClient:
         self.latest_image_path = None
         self.latest_image_data = None
         self.reconnect_delay = 5  # Thời gian chờ trước khi kết nối lại (giây)
-        self.last_error_message = None  # Biến để theo dõi thông báo lỗi gần nhất
-        self.last_error_time = None  # Thời gian nhận được thông báo lỗi gần nhất
 
     async def connect(self):
         """Kết nối tới WebSocket server"""
@@ -165,25 +163,7 @@ class PhotoClient:
                     
                     elif data.get("type") == "error":
                         # Thông báo lỗi
-                        error_message = data.get('message', '')
-                        
-                        # Kiểm tra và giảm bớt thông báo lỗi trùng lặp
-                        current_time = time.time()
-                        
-                        # Nếu là lỗi "Không có file hình ảnh nào"
-                        if "Không có file hình ảnh nào" in error_message:
-                            # Chỉ log lỗi này nếu là lần đầu hoặc đã qua 60 giây kể từ lần cuối
-                            if self.last_error_message != error_message or \
-                               self.last_error_time is None or \
-                               (current_time - self.last_error_time) > 60:
-                                logger.error(f"Server báo lỗi: {error_message}")
-                                self.last_error_message = error_message
-                                self.last_error_time = current_time
-                        else:
-                            # Với các lỗi khác, luôn log
-                            logger.error(f"Server báo lỗi: {error_message}")
-                            self.last_error_message = error_message
-                            self.last_error_time = current_time
+                        logger.error(f"Server báo lỗi: {data.get('message', '')}")
                 
                 except json.JSONDecodeError:
                     logger.warning(f"Nhận được tin nhắn không phải JSON")
@@ -236,10 +216,16 @@ class PhotoClient:
             self.connected = False
             logger.info("Đã đóng kết nối")
 
-def start_client():
-    """Khởi động client trong một thread riêng biệt"""
+def start_client(websocket_url=None):
+    """
+    Khởi động client trong một thread riêng biệt
+    
+    Args:
+        websocket_url: URL WebSocket tùy chọn để ghi đè lên giá trị từ config
+    """
     import threading
     import nest_asyncio
+    from config import WEBSOCKET_URL as CONFIG_WEBSOCKET_URL
     
     # Cho phép lồng event loop asyncio
     nest_asyncio.apply()
@@ -253,6 +239,11 @@ def start_client():
     
     # Hàm chạy client trong thread riêng
     def run_client():
+        global WEBSOCKET_URL
+        # Sử dụng URL được cung cấp nếu có
+        if websocket_url:
+            WEBSOCKET_URL = websocket_url
+            logger.info(f"Sử dụng WebSocket URL tùy chỉnh: {websocket_url}")
         loop.run_until_complete(client.run())
     
     # Tạo và chạy thread
