@@ -90,10 +90,7 @@ def capture_photo_thread():
                     update_status = update_latest_photo(photo_path)
                     if update_status:
                         logger.info(f"Đã cập nhật ảnh mới: {os.path.basename(photo_path)}")
-                        # Lưu file vào archive sau khi cập nhật
-                        archive_path = os.path.join(ARCHIVE_DIR, os.path.basename(photo_path))
-                        os.makedirs(ARCHIVE_DIR, exist_ok=True)
-                        os.rename(photo_path, archive_path)
+                        # Không sao lưu file ảnh vào archive nữa
                     else:
                         logger.error(f"Lỗi khi cập nhật ảnh: {os.path.basename(photo_path)}")
                     photo_failures = 0
