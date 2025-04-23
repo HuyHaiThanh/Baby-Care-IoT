@@ -576,7 +576,7 @@ class AudioClient:
     
     def send_audio_via_websocket(self, audio_data, timestamp):
         """
-        Gửi dữ liệu âm thanh qua WebSocket theo định dạng yêu cầu của server
+        Gửi dữ liệu âm thanh qua WebSocket với cấu trúc JSON đơn giản hóa
         
         Args:
             audio_data (numpy.ndarray): Dữ liệu âm thanh
@@ -593,11 +593,9 @@ class AudioClient:
             # Chuyển đổi dữ liệu âm thanh thành base64
             audio_base64 = self.get_audio_as_base64(audio_data)
             
-            # Tạo message theo định dạng yêu cầu của server
+            # Tạo message với cấu trúc đơn giản hóa (không gửi device_id vì đã gửi khi kết nối)
             message = {
                 'timestamp': timestamp,
-                'sample_rate': self.sample_rate,
-                'channels': self.channels,
                 'audio_data': audio_base64
             }
             
