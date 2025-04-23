@@ -39,7 +39,7 @@ class CameraClient:
     """
     Client xử lý chụp ảnh và gửi hình ảnh đến server
     """
-    def __init__(self, use_websocket=True, interval=PHOTO_INTERVAL):
+    def __init__(self, use_websocket=True, interval=1):  # Giảm xuống 1 giây mặc định
         """
         Khởi tạo camera client
         
@@ -277,17 +277,17 @@ class CameraClient:
             # Đường dẫn đến file tạm
             temp_path = os.path.join(TEMP_DIR, "temp_capture.jpg")
             
-            # Chụp ảnh với fswebcam (sử dụng cài đặt từ code tham khảo)
+            # Chụp ảnh với fswebcam với độ phân giải thấp hơn
             subprocess.run([
                 'fswebcam',
                 '-q',                   # Chế độ im lặng (không hiển thị banner)
-                '-r', '1280x720',       # Độ phân giải cao hơn
+                '-r', '640x480',        # Giảm độ phân giải xuống
                 '--no-banner',          # Không hiển thị banner
                 '-d', device_path,      # Thiết bị camera
-                '--jpeg', '85',         # Chất lượng JPEG
-                '-F', '5',              # Số frames để bỏ qua (giúp camera ổn định)
+                '--jpeg', '70',         # Giảm chất lượng JPEG để tăng tốc
+                '-F', '2',              # Giảm số frames để bỏ qua (tăng tốc)
                 temp_path               # Đường dẫn file đầu ra
-            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=15)  # Tăng timeout lên 15 giây
+            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=5)  # Giảm timeout để tăng tốc
             
             # Kiểm tra file có được tạo thành công
             if not os.path.exists(temp_path):
@@ -324,15 +324,15 @@ class CameraClient:
             # Đảm bảo thư mục tồn tại
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
-            # Sử dụng libcamera-still để chụp ảnh (hỗ trợ Raspberry Pi mới)
+            # Sử dụng libcamera-still với độ phân giải thấp hơn
             subprocess.run([
                 'libcamera-still',
-                '-t', '1000',           # Thời gian chờ 1 giây
+                '-t', '500',            # Giảm thời gian chờ xuống 0.5 giây
                 '-n',                   # Không hiển thị preview
-                '--width', '1280',      # Chiều rộng
-                '--height', '720',      # Chiều cao
+                '--width', '640',       # Giảm chiều rộng
+                '--height', '480',      # Giảm chiều cao
                 '-o', output_path       # Đường dẫn file đầu ra
-            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=10)
+            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=3)
             
             # Kiểm tra file có được tạo thành công
             if not os.path.exists(output_path):
@@ -365,11 +365,11 @@ class CameraClient:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
             camera = PiCamera()
-            camera.resolution = (1280, 720)
+            camera.resolution = (640, 480)  # Giảm độ phân giải
             
-            # Khởi động camera và chờ cân bằng độ sáng
+            # Khởi động camera và chờ cân bằng độ sáng (giảm thời gian chờ)
             camera.start_preview()
-            time.sleep(2)  # Chờ camera điều chỉnh độ sáng
+            time.sleep(0.5)  # Giảm thời gian chờ xuống 0.5 giây
             
             # Chụp ảnh
             camera.capture(output_path)
@@ -619,8 +619,8 @@ class CameraClient:
 
 # Test module khi chạy trực tiếp
 if __name__ == "__main__":
-    # Khởi tạo client
-    camera_client = CameraClient(use_websocket=True, interval=10)  # Chụp ảnh mỗi 10 giây
+    # Khởi tạo client với khoảng thời gian 1 giây
+    camera_client = CameraClient(use_websocket=True, interval=1)  # Giảm xuống 1 giây
     
     # Bắt đầu client
     camera_client.start()
