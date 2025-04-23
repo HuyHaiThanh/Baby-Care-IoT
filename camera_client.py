@@ -172,13 +172,24 @@ class CameraClient:
                 if hasattr(self, 'ws') and self.ws:
                     self.ws.close()
                     
-                logger.info(f"Đang kết nối tới {IMAGE_WS_ENDPOINT}/{DEVICE_ID}")
+                # Thêm token xác thực vào URL WebSocket
+                auth_token = f"?token={DEVICE_ID}"
+                websocket_url = f"{IMAGE_WS_ENDPOINT}/{DEVICE_ID}{auth_token}"
+                logger.info(f"Đang kết nối tới {websocket_url}")
+                
+                # Thêm header xác thực
+                headers = {
+                    "Authorization": f"Bearer {DEVICE_ID}",
+                    "X-Device-ID": DEVICE_ID
+                }
+                
                 self.ws = websocket.WebSocketApp(
-                    f"{IMAGE_WS_ENDPOINT}/{DEVICE_ID}",
+                    websocket_url,
                     on_open=on_open,
                     on_message=on_message,
                     on_error=on_error,
-                    on_close=on_close
+                    on_close=on_close,
+                    header=headers
                 )
                 self.ws.run_forever()
             except Exception as e:
