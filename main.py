@@ -223,7 +223,9 @@ def main():
             if camera_client.ws_connected:
                 sent_count = camera_client.sent_success_count
             
-            status_lines.append(f"  - Captured: {camera_client.total_photos_taken} | Sent: {sent_count} | Queue: {camera_client.sent_fail_count}")
+            # Hiển thị kích thước hàng đợi đúng, sử dụng queue_size_counter thay vì sent_fail_count
+            queue_size = camera_client.queue_size_counter if hasattr(camera_client, 'queue_size_counter') else 0
+            status_lines.append(f"  - Captured: {camera_client.total_photos_taken} | Sent: {sent_count} | Queue: {queue_size}")
         
         return status_lines
     
