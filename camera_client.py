@@ -265,26 +265,72 @@ class CameraClient:
             device_path = '/dev/video0'
             logger.info(f"Bắt đầu chụp ảnh từ thiết bị {device_path}...")
             
-            # Chụp ảnh trực tiếp với fswebcam (không cần file tạm)
-            subprocess.run([
+            # Chụp ảnh với fswebcam và sử dụng cài đặt phù hợp với camera
+            command = [
                 'fswebcam',
                 '-q',                   # Chế độ im lặng
-                '-r', '320x240',        # Độ phân giải thấp để tăng tốc
+                '-r', '640x480',        # Độ phân giải tương thích với camera
                 '--no-banner',          # Không hiển thị banner
                 '-d', device_path,      # Thiết bị camera
-                '--jpeg', '50',         # Chất lượng JPEG thấp cho tốc độ nhanh
-                '-F', '1',              # Giảm số frames bỏ qua xuống 1 để nhanh hơn
+                '--jpeg', '85',         # Chất lượng JPEG tốt hơn
+                '-S', '2',              # Bỏ qua 2 frame đầu để camera ổn định
+                '-p', 'MJPG',          # Sử dụng định dạng MJPG mà camera hỗ trợ
+                '--set', 'brightness=60%', # Điều chỉnh độ sáng
+                '--set', 'contrast=50%',   # Điều chỉnh độ tương phản
                 output_path             # Lưu trực tiếp vào đường dẫn đích
-            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=3)
+            ]
+            
+            logger.info(f"Chạy lệnh: {' '.join(command)}")
+            
+            # Tăng timeout lên 10 giây để tránh bị timeout
+            subprocess.run(command, stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=10)
             
             # Kiểm tra file có được tạo thành công
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                logger.info(f"Đã chụp ảnh: {output_path}")
+                logger.info(f"Đã chụp ảnh thành công: {output_path}")
                 return output_path
                 
+            # Nếu không thành công với MJPG, thử với YUYV
+            if os.path.exists(output_path) and os.path.getsize(output_path) == 0:
+                logger.warning("Thất bại với MJPG, thử lại với YUYV...")
+                command[10] = 'YUYV'  # Thay đổi định dạng
+                command[2] = '320x240'  # Giảm độ phân giải cho YUYV
+                
+                subprocess.run(command, stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=10)
+                
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    logger.info(f"Đã chụp ảnh thành công với YUYV: {output_path}")
+                    return output_path
+                    
             logger.error("Lỗi chụp ảnh - file không được tạo hoặc kích thước bằng 0")
             return None
                     
+        except subprocess.TimeoutExpired:
+            logger.error(f"Lệnh fswebcam hết thời gian chờ sau 10 giây. Thử với cài đặt đơn giản hơn...")
+            
+            # Thử với cài đặt đơn giản nhất
+            try:
+                simple_command = [
+                    'fswebcam',
+                    '-q',                   # Chế độ im lặng
+                    '-r', '320x240',        # Độ phân giải thấp nhất
+                    '--no-banner',          # Không hiển thị banner
+                    '-d', device_path,      # Thiết bị camera
+                    output_path             # Lưu trực tiếp vào đường dẫn đích
+                ]
+                
+                subprocess.run(simple_command, stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=5)
+                
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    logger.info(f"Đã chụp ảnh thành công với cài đặt đơn giản: {output_path}")
+                    return output_path
+                    
+                return None
+                
+            except Exception as e:
+                logger.error(f"Lỗi khi chụp ảnh với cài đặt đơn giản: {e}")
+                return None
+                
         except Exception as e:
             logger.error(f"Lỗi khi chụp ảnh với fswebcam: {e}")
             return None
