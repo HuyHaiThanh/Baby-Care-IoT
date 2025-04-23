@@ -65,6 +65,12 @@ class CameraClient:
         self.processing_status = "Đang chờ"
         self.next_photo_time = time.time() + interval
         
+        # Thêm bộ đếm thời gian
+        self.last_capture_time = time.time()
+        self.last_sent_time = 0
+        self.capture_duration = 0  # Thời gian chụp ảnh (giây)
+        self.sending_duration = 0  # Thời gian gửi ảnh (giây)
+        
         # Tạo các thư mục cần thiết
         os.makedirs(PHOTO_DIR, exist_ok=True)
         os.makedirs(TEMP_DIR, exist_ok=True)
@@ -568,11 +574,19 @@ class CameraClient:
         Returns:
             bool: True nếu thành công, False nếu không
         """
-        # Cập nhật trạng thái
+        # Cập nhật trạng thái và bắt đầu đo thời gian
         self.processing_status = "Đang chụp ảnh..."
+        capture_start_time = time.time()
+        
+        # Tính khoảng thời gian từ lần chụp trước
+        capture_interval = capture_start_time - self.last_capture_time
+        self.last_capture_time = capture_start_time
         
         # Chụp ảnh
         image_path = self.capture_photo()
+        
+        # Đo thời gian chụp ảnh
+        self.capture_duration = time.time() - capture_start_time
         
         if not image_path:
             logger.error("Không thể chụp ảnh để gửi đến server")
@@ -591,8 +605,9 @@ class CameraClient:
         _, timestamp = get_timestamp()
         success = False
         
-        # Cập nhật trạng thái
+        # Cập nhật trạng thái và bắt đầu đo thời gian gửi
         self.processing_status = "Đang gửi ảnh..."
+        send_start_time = time.time()
         
         if self.use_websocket and self.ws_connected:
             # Ưu tiên gửi qua WebSocket nếu có kết nối
@@ -600,6 +615,10 @@ class CameraClient:
         else:
             # Nếu không có kết nối WebSocket, gửi qua REST API
             success = self.send_image_to_server(image_path, timestamp, quality)
+        
+        # Đo thời gian gửi ảnh
+        self.sending_duration = time.time() - send_start_time
+        self.last_sent_time = time.time()
             
         # Cập nhật biến đếm thành công/thất bại và trạng thái
         if success:

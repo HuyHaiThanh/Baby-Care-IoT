@@ -169,17 +169,31 @@ def main():
                 audio_status = "Đang ghi âm" if audio_client.is_recording else "Tạm dừng"
                 vad_status = "Bật" if audio_client.use_vad_filter else "Tắt"
                 
+                # Định dạng thời gian xử lý với 1 chữ số thập phân
+                proc_time = f"{audio_client.processing_duration:.1f}s"
+                proc_interval = f"{audio_client.processing_interval:.1f}s"
+                
                 print(f"• Âm thanh: {audio_status} | VAD: {vad_status}")
                 print(f"  - File hiện tại: {audio_client.current_audio_file}")
                 print(f"  - Trạng thái: {audio_client.processing_status}")
+                print(f"  - Thời gian xử lý: {proc_time} | Khoảng cách: {proc_interval}")
                 print(f"  - Đã xử lý: {audio_client.total_audio_processed} mẫu")
                 print(f"  - Đã gửi thành công: {audio_client.sent_success_count} mẫu")
             
             # Cập nhật và hiển thị thông tin về hình ảnh
             if camera_client:
-                print(f"• Hình ảnh: Chụp ảnh mỗi {args.photo_interval}s")
+                # Tính thời gian đến lần chụp tiếp theo
+                time_to_next = max(0, camera_client.next_photo_time - time.time())
+                
+                # Định dạng thời gian với 1 chữ số thập phân
+                capture_time = f"{camera_client.capture_duration:.1f}s"
+                sending_time = f"{camera_client.sending_duration:.1f}s"
+                next_in = f"{time_to_next:.1f}s"
+                
+                print(f"• Hình ảnh: Chụp ảnh mỗi {args.photo_interval}s | Ảnh tiếp theo sau {next_in}")
                 print(f"  - File hiện tại: {camera_client.current_photo_file}")
                 print(f"  - Trạng thái: {camera_client.processing_status}")
+                print(f"  - Thời gian chụp: {capture_time} | Thời gian gửi: {sending_time}")
                 print(f"  - Đã chụp: {camera_client.total_photos_taken} ảnh")
                 print(f"  - Đã gửi thành công: {camera_client.sent_success_count} ảnh")
             

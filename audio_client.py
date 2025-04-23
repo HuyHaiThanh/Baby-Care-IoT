@@ -75,6 +75,12 @@ class AudioClient:
         self.current_audio_file = "Không có"
         self.processing_status = "Đang chờ"
         
+        # Thêm bộ đếm thời gian
+        self.last_processed_time = time.time()
+        self.last_sent_time = 0
+        self.processing_duration = 0  # Thời gian xử lý (giây)
+        self.processing_interval = 0  # Khoảng thời gian giữa các lần xử lý (giây)
+        
         if PYAUDIO_AVAILABLE:
             self.format = pyaudio.paInt16
             self.audio = pyaudio.PyAudio()
@@ -458,6 +464,13 @@ class AudioClient:
         Args:
             window_data (numpy.ndarray): Dữ liệu âm thanh cho cửa sổ hiện tại
         """
+        # Đánh dấu thời gian bắt đầu xử lý
+        process_start_time = time.time()
+        
+        # Tính khoảng thời gian từ lần xử lý cuối cùng
+        self.processing_interval = process_start_time - self.last_processed_time
+        self.last_processed_time = process_start_time
+        
         string_timestamp, float_timestamp = get_timestamp()
         chunk_id = f"audio_{string_timestamp}"
         
@@ -475,6 +488,7 @@ class AudioClient:
             
             # Lưu tên file hiện tại
             self.current_audio_file = chunk_id
+            send_start_time = time.time()
             
             # Gửi dữ liệu âm thanh đến server qua WebSocket hoặc REST API
             if self.use_websocket and self.ws_connected:
@@ -498,9 +512,16 @@ class AudioClient:
                 else:
                     self.sent_fail_count += 1
                     self.processing_status = "Lỗi gửi âm thanh"
+            
+            # Cập nhật thời gian gửi và xử lý
+            self.last_sent_time = time.time()
+            self.sending_time = self.last_sent_time - send_start_time
         else:
             self.processing_status = f"Bỏ qua (lý do: {analysis_info.get('reason', 'không xác định')})"
             logger.debug(f"Bỏ qua chunk âm thanh (lý do: {analysis_info.get('reason')})")
+        
+        # Tính tổng thời gian xử lý
+        self.processing_duration = time.time() - process_start_time
     
     def get_audio_as_base64(self, audio_data):
         """
