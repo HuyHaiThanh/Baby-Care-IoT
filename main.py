@@ -6,6 +6,46 @@ import time
 import signal
 import sys
 import argparse
+
+# Chuyển hướng các lỗi ALSA (chạy trước khi import thư viện âm thanh)
+# Lưu stderr để có thể khôi phục sau này nếu cần
+os.environ['PYTHONUNBUFFERED'] = '1'  # Đảm bảo output không bị buffer
+devnull = os.open(os.devnull, os.O_WRONLY)
+old_stderr = os.dup(2)
+sys.stderr.flush()
+os.dup2(devnull, 2)
+os.close(devnull)
+
+# Kiểm tra và xử lý lỗi NumPy/SciPy
+try:
+    # Khôi phục stderr tạm thời để xem lỗi NumPy/SciPy nếu có
+    os.dup2(old_stderr, 2)
+    import numpy as np
+    try:
+        import scipy.signal
+        # Chuyển hướng stderr lại sau khi import thành công
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, 2)
+        os.close(devnull)
+    except ImportError:
+        print("\n❌ Lỗi: Phiên bản NumPy và SciPy không tương thích!")
+        print("Vui lòng cài đặt lại các thư viện với phiên bản tương thích:")
+        print("\nsudo pip uninstall -y numpy scipy")
+        print("sudo apt-get update")
+        print("sudo apt-get install -y python3-numpy python3-scipy")
+        print("\nHoặc nếu cần phiên bản cụ thể qua pip:")
+        print("pip install numpy==1.16.6 scipy==1.2.3\n")
+        sys.exit(1)
+except ImportError:
+    print("\n❌ Lỗi: Không thể import NumPy!")
+    print("Vui lòng cài đặt NumPy với:")
+    print("\nsudo apt-get update")
+    print("sudo apt-get install -y python3-numpy libatlas-base-dev\n")
+    sys.exit(1)
+
+# Khôi phục stderr cho các thư viện không liên quan đến âm thanh
+# os.dup2(old_stderr, 2)  # Bỏ comment nếu bạn muốn xem tất cả lỗi
+
 from audio_client import AudioClient
 from camera_client import CameraClient
 from utils import logger
