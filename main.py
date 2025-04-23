@@ -1,5 +1,5 @@
 # File: main.py
-# Tệp chính để chạy client Raspberry Pi cho giám sát trẻ em
+# Main file for running the Baby Monitoring Raspberry Pi client
 
 import os
 import time
@@ -7,238 +7,230 @@ import signal
 import sys
 import argparse
 
-# Chuyển hướng các lỗi ALSA (chạy trước khi import thư viện âm thanh)
-# Lưu stderr để có thể khôi phục sau này nếu cần
-os.environ['PYTHONUNBUFFERED'] = '1'  # Đảm bảo output không bị buffer
+# Redirect ALSA errors (run before importing audio libraries)
+# Save stderr to restore later if needed
+os.environ['PYTHONUNBUFFERED'] = '1'  # Ensure output is not buffered
 devnull = os.open(os.devnull, os.O_WRONLY)
 old_stderr = os.dup(2)
 sys.stderr.flush()
 os.dup2(devnull, 2)
 os.close(devnull)
 
-# Kiểm tra và xử lý lỗi NumPy/SciPy
+# Check and handle NumPy/SciPy errors
 try:
-    # Khôi phục stderr tạm thời để xem lỗi NumPy/SciPy nếu có
+    # Temporarily restore stderr to see NumPy/SciPy errors if any
     os.dup2(old_stderr, 2)
     import numpy as np
     try:
         import scipy.signal
-        # Chuyển hướng stderr lại sau khi import thành công
+        # Redirect stderr again after successful import
         devnull = os.open(os.devnull, os.O_WRONLY)
         os.dup2(devnull, 2)
         os.close(devnull)
     except ImportError:
-        print("\n❌ Lỗi: Phiên bản NumPy và SciPy không tương thích!")
-        print("Vui lòng cài đặt lại các thư viện với phiên bản tương thích:")
+        print("\n❌ Error: NumPy and SciPy versions are incompatible!")
+        print("Please reinstall the libraries with compatible versions:")
         print("\nsudo pip uninstall -y numpy scipy")
         print("sudo apt-get update")
         print("sudo apt-get install -y python3-numpy python3-scipy")
-        print("\nHoặc nếu cần phiên bản cụ thể qua pip:")
+        print("\nOr if you need specific versions via pip:")
         print("pip install numpy==1.16.6 scipy==1.2.3\n")
         sys.exit(1)
 except ImportError:
-    print("\n❌ Lỗi: Không thể import NumPy!")
-    print("Vui lòng cài đặt NumPy với:")
+    print("\n❌ Error: Cannot import NumPy!")
+    print("Please install NumPy with:")
     print("\nsudo apt-get update")
     print("sudo apt-get install -y python3-numpy libatlas-base-dev\n")
     sys.exit(1)
 
-# Khôi phục stderr cho các thư viện không liên quan đến âm thanh
-# os.dup2(old_stderr, 2)  # Bỏ comment nếu bạn muốn xem tất cả lỗi
-
-from audio_client import AudioRecorder  # Import AudioRecorder thay vì AudioClient
+from audio_client import AudioRecorder
 from camera_client import CameraClient
 from utils import logger
 
-# Flag để kiểm soát việc thoát chương trình
+# Flag to control program exit
 running = True
 
 def signal_handler(sig, frame):
-    """Xử lý tín hiệu tắt từ hệ thống."""
+    """Handle system shutdown signals."""
     global running
-    print("\nĐang dừng hệ thống...")
+    print("\nStopping system...")
     running = False
 
 def parse_arguments():
-    """Xử lý tham số dòng lệnh"""
-    parser = argparse.ArgumentParser(description='Raspberry Pi client cho hệ thống giám sát trẻ em')
+    """Process command line arguments"""
+    parser = argparse.ArgumentParser(description='Raspberry Pi client for baby monitoring system')
     
-    parser.add_argument('--no-audio', action='store_true', help='Tắt chức năng ghi âm')
-    parser.add_argument('--no-camera', action='store_true', help='Tắt chức năng camera')
-    parser.add_argument('--no-websocket', action='store_true', help='Chỉ sử dụng REST API (không WebSocket)')
-    parser.add_argument('--no-vad', action='store_true', help='Tắt bộ lọc Voice Activity Detection')
-    parser.add_argument('--photo-interval', type=int, default=5, help='Khoảng thời gian giữa các lần chụp ảnh (giây)')
-    parser.add_argument('--debug', action='store_true', help='Bật chế độ debug')
+    parser.add_argument('--no-audio', action='store_true', help='Disable audio recording')
+    parser.add_argument('--no-camera', action='store_true', help='Disable camera')
+    parser.add_argument('--photo-interval', type=int, default=5, help='Interval between photos (seconds)')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     
     return parser.parse_args()
 
 def main():
-    """Hàm chính khởi động chương trình"""
-    # Đăng ký xử lý tín hiệu cho việc tắt chương trình
+    """Main function to start the program"""
+    # Register signal handlers for program termination
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # Xử lý tham số dòng lệnh
+    # Process command line arguments
     args = parse_arguments()
     
-    # Thời gian bắt đầu chạy hệ thống
+    # System start time
     start_time = time.time()
     
-    # In thông tin khởi động
+    # Print startup information
     print("\n" + "=" * 60)
-    print("HỆ THỐNG GIÁM SÁT TRẺ EM - Raspberry Pi Client")
+    print("BABY MONITORING SYSTEM - Raspberry Pi Client")
     print("=" * 60)
     
-    # Khởi tạo các client
+    # Initialize clients
     audio_client = None
     camera_client = None
     
-    # Khởi động AudioRecorder nếu không bị tắt qua tham số
+    # Start AudioRecorder if not disabled via parameters
     if not args.no_audio:
-        print("\n>> Khởi động module xử lý âm thanh...")
+        print("\n>> Starting audio processing module...")
         try:
             audio_client = AudioRecorder()
             audio_client.start_recording()
-            print("✓ Module âm thanh đã khởi động thành công")
+            print("✓ Audio module started successfully")
         except Exception as e:
-            print(f"✗ Không thể khởi động module âm thanh: {e}")
+            print(f"✗ Cannot start audio module: {e}")
             audio_client = None
     
-    # Khởi động CameraClient nếu không bị tắt qua tham số
+    # Start CameraClient if not disabled via parameters
     if not args.no_camera:
-        print("\n>> Khởi động module xử lý hình ảnh...")
-        camera_client = CameraClient(
-            use_websocket=not args.no_websocket,
-            interval=args.photo_interval
-        )
+        print("\n>> Starting image processing module...")
+        camera_client = CameraClient(interval=args.photo_interval)
         if camera_client.start():
-            print("✓ Module hình ảnh đã khởi động thành công")
+            print("✓ Image module started successfully")
         else:
-            print("✗ Không thể khởi động module hình ảnh")
+            print("✗ Cannot start image module")
             camera_client = None
     
     if not audio_client and not camera_client:
-        print("\n❌ Lỗi: Không thể khởi động bất kỳ module nào. Chương trình sẽ thoát.")
+        print("\n❌ Error: Cannot start any module. Program will exit.")
         return
     
-    # In thông tin về các module đã khởi động
+    # Print information about running modules
     print("\n" + "-" * 60)
-    print("Thông tin hệ thống:")
-    print(f"• Chế độ audio: {'Đang chạy' if audio_client else 'Đã tắt'}")
-    print(f"• Chế độ camera: {'Đang chạy' if camera_client else 'Đã tắt'}")
-    print(f"• Phương thức kết nối: {'REST API' if args.no_websocket else 'WebSocket'}")
+    print("System Information:")
+    print(f"• Audio mode: {'Running' if audio_client else 'Disabled'}")
+    print(f"• Camera mode: {'Running' if camera_client else 'Disabled'}")
+    print(f"• Connection method: WebSocket")
     
-    # Hiển thị thông tin của server
+    # Display server information
     from config import AUDIO_SERVER_HOST, AUDIO_SERVER_PORT, IMAGE_SERVER_HOST, IMAGE_SERVER_PORT
-    print(f"• Server âm thanh: {AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT}")
-    print(f"• Server hình ảnh: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
+    print(f"• Audio server: {AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT}")
+    print(f"• Image server: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
     
     if camera_client:
-        print(f"• Chụp ảnh: mỗi {args.photo_interval} giây")
+        print(f"• Capture photos: every {args.photo_interval} seconds")
     
     print("-" * 60)
-    print("\nHệ thống đang chạy. Nhấn Ctrl+C để dừng.\n")
+    print("\nSystem running. Press Ctrl+C to stop.\n")
     
-    # Khoảng thời gian cập nhật thông tin (giây)
-    # Tăng khoảng thời gian làm mới lên để giảm hiện tượng giật
-    update_interval = 1.0  # Cập nhật mỗi 1 giây thay vì 0.5 giây
+    # Update interval (seconds)
+    # Increase refresh interval to reduce flickering
+    update_interval = 1.0
     
-    # Lưu trữ nội dung hiển thị trước đó để tránh việc xóa và in lại màn hình quá thường xuyên
+    # Store previous display content to avoid unnecessary screen clearing
     last_display = ""
     
-    # Vòng lặp chính hiển thị trạng thái hệ thống
+    # Main loop to display system status
     try:
         while running:
-            # Tính thời gian chạy
+            # Calculate runtime
             runtime = time.time() - start_time
             hours, remainder = divmod(int(runtime), 3600)
             minutes, seconds = divmod(remainder, 60)
             runtime_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
             
-            # Tạo nội dung hiển thị mới
+            # Create new display content
             current_time = time.strftime("%H:%M:%S", time.localtime())
             
-            # Tạo nội dung để hiển thị
+            # Create content to display
             display = []
             display.append("\n" + "=" * 60)
-            display.append(f"HỆ THỐNG GIÁM SÁT TRẺ EM - Raspberry Pi Client - Thời gian: {runtime_str}")
+            display.append(f"BABY MONITORING SYSTEM - Raspberry Pi Client - Runtime: {runtime_str}")
             display.append("=" * 60)
-            display.append(f"\n[{current_time}] Trạng thái hệ thống:")
-            display.append(f"• Server âm thanh: {AUDIO_SERVER_HOST}")
-            display.append(f"• Server hình ảnh: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
+            display.append(f"\n[{current_time}] System Status:")
+            display.append(f"• Audio server: {AUDIO_SERVER_HOST}")
+            display.append(f"• Image server: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
             
-            # Thêm thông tin về WebSocket
+            # Add WebSocket information
             if audio_client:
-                audio_ws_status = "Đã kết nối" if audio_client.ws_connected else "Đang kết nối..."
-                display.append(f"• WebSocket âm thanh: {audio_ws_status} | Trạng thái: {audio_client.last_ws_status}")
+                audio_ws_status = "Connected" if audio_client.ws_connected else "Connecting..."
+                display.append(f"• Audio WebSocket: {audio_ws_status} | Status: {audio_client.last_ws_status}")
             
-            if not args.no_websocket and camera_client:
-                camera_ws_status = "Đã kết nối" if camera_client.ws_connected else "Đang kết nối..."
-                display.append(f"• WebSocket hình ảnh: {camera_ws_status}")
+            if camera_client:
+                camera_ws_status = "Connected" if camera_client.ws_connected else "Connecting..."
+                display.append(f"• Image WebSocket: {camera_ws_status}")
             
-            # Thêm thông tin về âm thanh nếu module âm thanh đang chạy
+            # Add audio information if audio module is running
             if audio_client:
-                audio_status = "Đang ghi âm" if audio_client.is_recording else "Tạm dừng"
+                audio_status = "Recording" if audio_client.is_recording else "Paused"
                 
-                # Hiển thị thông tin về AudioRecorder
-                display.append(f"• Âm thanh: {audio_status}")
-                display.append(f"  - Kết nối WebSocket: {audio_client.last_ws_status}")
-                display.append(f"  - Chunk ID hiện tại: audio_chunk_{audio_client.save_counter}")
-                display.append(f"  - Đã xử lý: {audio_client.save_counter} mẫu")
-                display.append(f"  - Kích thước cửa sổ: {audio_client.window_size}s | Slide: {audio_client.slide_size}s")
+                # Display AudioRecorder information
+                display.append(f"• Audio: {audio_status}")
+                display.append(f"  - WebSocket connection: {audio_client.last_ws_status}")
+                display.append(f"  - Current chunk ID: audio_chunk_{audio_client.save_counter}")
+                display.append(f"  - Processed: {audio_client.save_counter} samples")
+                display.append(f"  - Window size: {audio_client.window_size}s | Slide: {audio_client.slide_size}s")
                 display.append(f"  - Sample rate: {audio_client.sample_rate} Hz | Channels: {audio_client.channels}")
             
-            # Thêm thông tin về hình ảnh nếu module camera đang chạy
+            # Add image information if camera module is running
             if camera_client:
-                # Định dạng thời gian với 1 chữ số thập phân
+                # Format time with 1 decimal place
                 capture_time = f"{camera_client.capture_duration:.1f}s"
                 sending_time = f"{camera_client.sending_duration:.1f}s"
                 
-                display.append(f"• Hình ảnh: Chụp ảnh mỗi {args.photo_interval}s")
-                display.append(f"  - File hiện tại: {camera_client.current_photo_file}")
-                display.append(f"  - Trạng thái: {camera_client.processing_status}")
-                display.append(f"  - Thời gian chụp: {capture_time} | Thời gian gửi: {sending_time}")
-                display.append(f"  - Đã chụp: {camera_client.total_photos_taken} ảnh")
-                display.append(f"  - Đã gửi thành công: {camera_client.sent_success_count} ảnh")
+                display.append(f"• Images: Capturing every {args.photo_interval}s")
+                display.append(f"  - Current file: {camera_client.current_photo_file}")
+                display.append(f"  - Status: {camera_client.processing_status}")
+                display.append(f"  - Capture time: {capture_time} | Send time: {sending_time}")
+                display.append(f"  - Captured: {camera_client.total_photos_taken} images")
+                display.append(f"  - Successfully sent: {camera_client.sent_success_count} images")
             
-            # Kết hợp thành một chuỗi để hiển thị
+            # Combine into a string to display
             current_display = "\n".join(display)
             
-            # Chỉ xóa và cập nhật màn hình khi nội dung thay đổi
+            # Only clear and update screen when content changes
             if current_display != last_display:
-                # Xóa màn hình chỉ khi cần thiết và không ở chế độ debug
+                # Clear screen only when necessary and not in debug mode
                 if not args.debug:
                     if os.name == 'posix':  # Linux/Mac
                         os.system('clear')
                     elif os.name == 'nt':   # Windows
-                        # Sử dụng lệnh cls thông qua cmd.exe để tránh lỗi trên PowerShell
+                        # Use cmd.exe to avoid PowerShell errors
                         os.system('cmd /c cls')
                 
-                # In nội dung mới
+                # Print new content
                 print(current_display)
                 
-                # Cập nhật nội dung đã hiển thị
+                # Update displayed content
                 last_display = current_display
             
-            # Ngủ trong khoảng thời gian update_interval
+            # Sleep for update interval
             time.sleep(update_interval)
             
     except KeyboardInterrupt:
-        logger.info("Đã nhận tín hiệu dừng từ người dùng")
+        logger.info("Stop signal received from user")
     finally:
-        # Dừng các client
-        print("\nĐang dừng hệ thống...")
+        # Stop clients
+        print("\nStopping system...")
         
         if audio_client:
-            print(">> Dừng module âm thanh...")
+            print(">> Stopping audio module...")
             audio_client.stop_recording()
             audio_client.close()
             
         if camera_client:
-            print(">> Dừng module hình ảnh...")
+            print(">> Stopping image module...")
             camera_client.stop()
             
-        print("\n✓ Hệ thống đã dừng an toàn")
+        print("\n✓ System stopped safely")
 
 if __name__ == "__main__":
     main()

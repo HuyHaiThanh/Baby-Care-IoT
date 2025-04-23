@@ -1,5 +1,5 @@
 # File: camera_client.py
-# Module xử lý chụp ảnh và gửi hình ảnh đến server
+# Module for capturing and sending images to server
 
 import os
 import time
@@ -9,205 +9,137 @@ import subprocess
 import re
 import base64
 import json
-import websocket
-import requests
 from io import BytesIO
 from config import (
-    PHOTO_DIR, TEMP_DIR, DEVICE_ID, IMAGE_API_ENDPOINT, 
-    IMAGE_WS_ENDPOINT, PHOTO_INTERVAL, RECONNECT_INTERVAL
+    PHOTO_DIR, TEMP_DIR, DEVICE_ID, IMAGE_WS_ENDPOINT, 
+    PHOTO_INTERVAL
 )
-from utils import get_timestamp, make_api_request, logger
+from utils import get_timestamp, logger
+from websocket_client import WebSocketClient
 
-# Flag cho việc sử dụng PiCamera hoặc USB camera
+# Flag for PiCamera or USB camera availability
 PICAMERA_AVAILABLE = False
 
 try:
     from PIL import Image
-    logger.info("Đã phát hiện thư viện PIL")
+    logger.info("PIL library detected")
 except ImportError:
-    logger.warning("CẢNH BÁO: Không tìm thấy thư viện PIL. Chức năng xử lý ảnh sẽ bị hạn chế.")
+    logger.warning("WARNING: PIL library not found. Image processing capabilities will be limited.")
 
 try:
     from picamera import PiCamera
     PICAMERA_AVAILABLE = True
-    logger.info("Đã phát hiện PiCamera.")
+    logger.info("PiCamera detected.")
 except ImportError:
-    logger.warning("Không tìm thấy PiCamera. Sẽ sử dụng USB camera nếu có.")
+    logger.warning("PiCamera not found. Will use USB camera if available.")
 
 
 class CameraClient:
     """
-    Client xử lý chụp ảnh và gửi hình ảnh đến server
+    Client for capturing and sending images to the server
     """
-    def __init__(self, use_websocket=True, interval=1):  # Mặc định là 1 giây
+    def __init__(self, interval=1):
         """
-        Khởi tạo camera client
+        Initialize camera client
         
         Args:
-            use_websocket (bool): Sử dụng WebSocket cho kết nối thời gian thực
-            interval (int): Khoảng thời gian giữa các lần chụp ảnh (giây)
+            interval (int): Time interval between image captures (seconds)
         """
-        self.use_websocket = use_websocket
-        self.interval = interval  # Đảm bảo interval được sử dụng trong toàn class
+        self.interval = interval
         self.running = False
-        self.ws = None
-        self.ws_connected = False
-        self.ws_thread = None
         self.photo_thread = None
         
-        # Bộ đếm gửi dữ liệu
+        # Image statistics
         self.sent_success_count = 0
         self.sent_fail_count = 0
         self.total_photos_taken = 0
         
-        # Theo dõi file đang xử lý
-        self.current_photo_file = "Không có"
-        self.processing_status = "Đang chờ"
+        # Processing status tracking
+        self.current_photo_file = "None"
+        self.processing_status = "Waiting"
         self.next_photo_time = time.time() + interval
         
-        # Thêm bộ đếm thời gian
+        # Timing metrics
         self.last_capture_time = time.time()
         self.last_sent_time = 0
-        self.capture_duration = 0  # Thời gian chụp ảnh (giây)
-        self.sending_duration = 0  # Thời gian gửi ảnh (giây)
+        self.capture_duration = 0
+        self.sending_duration = 0
         
-        # Tạo các thư mục cần thiết
+        # WebSocket client
+        self.ws_client = WebSocketClient(
+            ws_url=IMAGE_WS_ENDPOINT,
+            device_id=DEVICE_ID,
+            client_type="camera"
+        )
+        self.ws_connected = False
+        
+        # Create required directories
         os.makedirs(PHOTO_DIR, exist_ok=True)
         os.makedirs(TEMP_DIR, exist_ok=True)
         
     def start(self):
         """
-        Khởi động camera client
+        Start camera client
         """
         self.running = True
         
-        # Khởi động kết nối WebSocket nếu cần
-        if self.use_websocket:
-            self.ws_thread = threading.Thread(target=self._websocket_thread)
-            self.ws_thread.daemon = True
-            self.ws_thread.start()
-            
-        # Khởi động thread chụp ảnh định kỳ
+        # Start WebSocket connection
+        self.ws_client.connect()
+        
+        # Start photo capture thread
         self.photo_thread = threading.Thread(target=self._photo_thread)
         self.photo_thread.daemon = True
         self.photo_thread.start()
             
-        logger.info("Camera client đã khởi động")
+        logger.info("Camera client started")
         return True
         
     def stop(self):
         """
-        Dừng camera client
+        Stop camera client
         """
         self.running = False
         
-        # Đóng kết nối WebSocket nếu có
-        if self.ws and self.ws_connected:
-            self.ws.close()
-            self.ws_connected = False
+        # Close WebSocket connection
+        self.ws_client.close()
             
-        # Đợi thread xử lý kết thúc
+        # Wait for processing thread to finish
         if self.photo_thread and self.photo_thread.is_alive():
-            self.photo_thread.join(timeout=1.0)  # Đợi tối đa 1 giây
+            self.photo_thread.join(timeout=1.0)
             
-        logger.info("Camera client đã dừng")
-        
-    def _websocket_thread(self):
-        """
-        Thread xử lý kết nối WebSocket
-        """
-        def on_message(ws, message):
-            try:
-                # Xử lý message từ server (nếu cần)
-                logger.info(f"Nhận tin nhắn từ server: {message}")
-            except Exception as e:
-                logger.error(f"Lỗi khi xử lý thông điệp WebSocket: {e}")
-
-        def on_error(ws, error):
-            logger.error(f"Lỗi WebSocket hình ảnh: {error}")
-            self.ws_connected = False
-
-        def on_close(ws, close_status_code, close_msg):
-            logger.info(f"WebSocket hình ảnh đã đóng: {close_status_code} - {close_msg}")
-            self.ws_connected = False
-            
-            # Thử kết nối lại sau một khoảng thời gian nếu client vẫn đang chạy
-            if self.running:
-                logger.info(f"Đang thử kết nối lại WebSocket hình ảnh sau {RECONNECT_INTERVAL} giây...")
-                time.sleep(RECONNECT_INTERVAL)
-                self._connect_websocket()
-
-        def on_open(ws):
-            logger.info("Đã kết nối WebSocket tới server xử lý hình ảnh")
-            
-            # Gửi device_id như tin nhắn đầu tiên (plain text)
-            self.ws.send(DEVICE_ID)
-            logger.info(f"Đã gửi ID thiết bị {DEVICE_ID} tới server")
-            
-            self.ws_connected = True
-        
-        # Khởi tạo và kết nối WebSocket
-        def _connect_websocket():
-            try:
-                if hasattr(self, 'ws') and self.ws:
-                    self.ws.close()
-                    
-                # Kết nối tới WebSocket endpoint
-                websocket_url = IMAGE_WS_ENDPOINT
-                logger.info(f"Đang kết nối tới {websocket_url}")
-                
-                self.ws = websocket.WebSocketApp(
-                    websocket_url,
-                    on_open=on_open,
-                    on_message=on_message,
-                    on_error=on_error,
-                    on_close=on_close
-                )
-                self.ws.run_forever()
-            except Exception as e:
-                logger.error(f"Lỗi kết nối WebSocket hình ảnh: {e}")
-                self.ws_connected = False
-                time.sleep(RECONNECT_INTERVAL)  # Đợi trước khi thử lại
-        
-        self._connect_websocket = _connect_websocket
-        
-        # Vòng lặp kết nối lại nếu mất kết nối
-        while self.running:
-            if not self.ws_connected:
-                _connect_websocket()
-            time.sleep(1)
+        logger.info("Camera client stopped")
     
     def _photo_thread(self):
         """
-        Thread chụp ảnh theo khoảng thời gian định kỳ và gửi đến server
+        Thread for periodically capturing images and sending to server
         """
         while self.running:
             try:
-                # Chụp ảnh và gửi đến server
+                # Capture and send image
                 self.capture_and_send_photo()
                 
-                # Đợi đến lần chụp tiếp theo
+                # Wait for next capture time
                 time.sleep(self.interval)
             except Exception as e:
-                logger.error(f"Lỗi trong thread chụp ảnh: {e}")
+                logger.error(f"Error in photo capture thread: {e}")
                 time.sleep(self.interval)
     
     def detect_video_devices(self):
-        """Phát hiện và trả về thông tin các thiết bị camera USB"""
+        """Detect and return USB camera devices"""
         try:
-            # Sử dụng lệnh v4l2-ctl để liệt kê các thiết bị video
+            # Use v4l2-ctl to list video devices
             proc = subprocess.run(['v4l2-ctl', '--list-devices'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             devices_output = proc.stdout.decode()
             
             if not devices_output.strip():
-                # Thử dùng cách khác để liệt kê thiết bị video
+                # Try alternative method to list video devices
                 proc = subprocess.run(['ls', '-la', '/dev/video*'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 devices_output = proc.stdout.decode()
                 
                 if 'No such file or directory' in devices_output:
                     return []
                     
-                # Phân tích đầu ra để tìm thiết bị video
+                # Parse output to find video devices
                 video_devices = []
                 for line in devices_output.splitlines():
                     match = re.search(r'/dev/video(\d+)', line)
@@ -219,15 +151,15 @@ class CameraClient:
                         })
                 return video_devices
             
-            # Phân tích đầu ra của v4l2-ctl
+            # Parse v4l2-ctl output
             devices = []
             current_device = None
             for line in devices_output.splitlines():
                 if ':' in line and '/dev/video' not in line:
-                    # Đây là tên thiết bị
+                    # This is a device name
                     current_device = line.strip().rstrip(':')
                 elif '/dev/video' in line:
-                    # Đây là đường dẫn thiết bị
+                    # This is a device path
                     match = re.search(r'/dev/video(\d+)', line)
                     if match and current_device:
                         devices.append({
@@ -237,80 +169,80 @@ class CameraClient:
                         })
             return devices
         except Exception as e:
-            logger.error(f"Lỗi khi phát hiện thiết bị camera: {e}")
+            logger.error(f"Error detecting camera devices: {e}")
             return []
     
     def get_best_video_device(self):
-        """Chọn thiết bị camera phù hợp nhất"""
+        """Choose the most suitable camera device"""
         devices = self.detect_video_devices()
         
         if not devices:
             return None
             
-        # Ưu tiên USB camera thường có từ camera, webcam, usb trong tên
+        # Prefer USB cameras with camera, webcam, usb in name
         for device in devices:
             if 'camera' in device.get('name', '').lower() or 'webcam' in device.get('name', '').lower() or 'usb' in device.get('name', '').lower():
                 return device
         
-        # Nếu không tìm thấy, chọn thiết bị đầu tiên
+        # If none found, use first device
         if len(devices) > 0:
             return devices[0]
             
         return None
-    
+
     def _capture_with_fswebcam(self, output_path):
-        """Chụp ảnh bằng fswebcam (cho USB camera)"""
+        """Capture image with fswebcam (for USB cameras)"""
         try:
-            # Tìm thiết bị camera
+            # Find camera device
             device = self.get_best_video_device()
             if not device:
-                logger.error("Không tìm thấy thiết bị camera USB")
+                logger.error("No USB camera device found")
                 return None
                     
-            # Dùng fswebcam để chụp ảnh
+            # Use fswebcam to capture image
             device_path = device['device']
-            logger.info(f"Bắt đầu chụp ảnh từ thiết bị {device_path}...")
+            logger.info(f"Starting image capture from device {device_path}...")
             
-            # Đảm bảo thư mục tạm tồn tại
+            # Ensure temp directory exists
             os.makedirs(TEMP_DIR, exist_ok=True)
             
-            # Đường dẫn đến file tạm
+            # Temporary file path
             temp_path = os.path.join(TEMP_DIR, "temp_capture.jpg")
             
-            # Chụp ảnh với fswebcam với độ phân giải thấp hơn
+            # Capture image with fswebcam at lower resolution
             subprocess.run([
                 'fswebcam',
-                '-q',                   # Chế độ im lặng (không hiển thị banner)
-                '-r', '640x480',        # Giảm độ phân giải xuống
-                '--no-banner',          # Không hiển thị banner
-                '-d', device_path,      # Thiết bị camera
-                '--jpeg', '70',         # Giảm chất lượng JPEG để tăng tốc
-                '-F', '2',              # Giảm số frames để bỏ qua (tăng tốc)
-                temp_path               # Đường dẫn file đầu ra
-            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=5)  # Giảm timeout để tăng tốc
+                '-q',                   # Quiet mode (no banner)
+                '-r', '640x480',        # Lower resolution
+                '--no-banner',          # No banner display
+                '-d', device_path,      # Camera device
+                '--jpeg', '70',         # Reduce JPEG quality to speed up
+                '-F', '2',              # Reduce frames to skip (speed up)
+                temp_path               # Output file path
+            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=5)
             
-            # Kiểm tra file có được tạo thành công
+            # Check if file was created successfully
             if not os.path.exists(temp_path):
-                logger.error("Lỗi chụp ảnh - file không được tạo")
+                logger.error("Error capturing image - file not created")
                 return None
                 
-            if os.path.getsize(temp_path) < 1000:  # Kiểm tra kích thước tối thiểu
-                logger.error("Lỗi chụp ảnh - file quá nhỏ, có thể bị lỗi")
+            if os.path.getsize(temp_path) < 1000:  # Check minimum file size
+                logger.error("Error capturing image - file too small, may be corrupted")
                 os.remove(temp_path)
                 return None
                 
-            # Di chuyển file từ thư mục tạm đến thư mục đích
+            # Move file from temp to destination directory
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             import shutil
             shutil.copy(temp_path, output_path)
             os.remove(temp_path)
             
-            logger.info(f"Đã chụp ảnh: {output_path}")
+            logger.info(f"Image captured: {output_path}")
             return output_path
                     
         except Exception as e:
-            logger.error(f"Lỗi khi chụp ảnh với fswebcam: {e}")
-            # Dọn dẹp file tạm nếu có lỗi
+            logger.error(f"Error capturing image with fswebcam: {e}")
+            # Clean up temp file if there was an error
             if 'temp_path' in locals() and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
@@ -319,320 +251,347 @@ class CameraClient:
             return None
 
     def _capture_with_libcamera(self, output_path):
-        """Chụp ảnh bằng libcamera-still (cho Pi Camera)"""
+        """Capture image with libcamera-still (for Pi Camera)"""
         try:
-            # Đảm bảo thư mục tồn tại
+            # Ensure directory exists
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
-            # Sử dụng libcamera-still với độ phân giải thấp hơn
+            # Use libcamera-still with lower resolution
             subprocess.run([
                 'libcamera-still',
-                '-t', '500',            # Giảm thời gian chờ xuống 0.5 giây
-                '-n',                   # Không hiển thị preview
-                '--width', '640',       # Giảm chiều rộng
-                '--height', '480',      # Giảm chiều cao
-                '-o', output_path       # Đường dẫn file đầu ra
+                '-t', '500',            # Reduce wait time to 0.5 seconds
+                '-n',                   # No preview
+                '--width', '640',       # Reduce width
+                '--height', '480',      # Reduce height
+                '-o', output_path       # Output file path
             ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=3)
             
-            # Kiểm tra file có được tạo thành công
+            # Check if file was created successfully
             if not os.path.exists(output_path):
-                logger.error("Lỗi chụp ảnh với libcamera - file không được tạo")
+                logger.error("Error capturing image with libcamera - file not created")
                 return None
                 
-            if os.path.getsize(output_path) < 1000:  # Kiểm tra kích thước tối thiểu
-                logger.error("Lỗi chụp ảnh với libcamera - file quá nhỏ, có thể bị lỗi")
+            if os.path.getsize(output_path) < 1000:  # Check minimum file size
+                logger.error("Error capturing image with libcamera - file too small, may be corrupted")
                 os.remove(output_path)
                 return None
                 
-            logger.info(f"Đã chụp ảnh với libcamera: {output_path}")
+            logger.info(f"Image captured with libcamera: {output_path}")
             return output_path
                     
         except FileNotFoundError:
-            logger.warning("libcamera-still không tìm thấy trên hệ thống")
+            logger.warning("libcamera-still not found on system")
             return None
         except Exception as e:
-            logger.error(f"Lỗi khi chụp ảnh với libcamera: {e}")
+            logger.error(f"Error capturing image with libcamera: {e}")
             return None
 
     def _capture_with_picamera(self, output_path):
-        """Chụp ảnh bằng module PiCamera"""
+        """Capture image with PiCamera module"""
         if not PICAMERA_AVAILABLE:
-            logger.warning("Không tìm thấy thư viện PiCamera")
+            logger.warning("PiCamera library not found")
             return None
             
         try:
-            # Đảm bảo thư mục tồn tại
+            # Ensure directory exists
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
             camera = PiCamera()
-            camera.resolution = (640, 480)  # Giảm độ phân giải
+            camera.resolution = (640, 480)  # Lower resolution
             
-            # Khởi động camera và chờ cân bằng độ sáng (giảm thời gian chờ)
+            # Initialize camera and wait for light balance (reduce wait time)
             camera.start_preview()
-            time.sleep(0.5)  # Giảm thời gian chờ xuống 0.5 giây
+            time.sleep(0.5)  # Reduce wait time to 0.5 seconds
             
-            # Chụp ảnh
+            # Capture image
             camera.capture(output_path)
             camera.stop_preview()
             camera.close()
             
-            logger.info(f"Đã chụp ảnh với PiCamera: {output_path}")
+            logger.info(f"Image captured with PiCamera: {output_path}")
             return output_path
         
         except Exception as e:
-            logger.error(f"Lỗi khi chụp ảnh với PiCamera: {e}")
+            logger.error(f"Error capturing image with PiCamera: {e}")
+            return None
+
+    def _capture_with_ffmpeg(self, output_path):
+        """Capture image with ffmpeg (fallback method)"""
+        try:
+            # Find camera device
+            device = self.get_best_video_device()
+            if not device:
+                return None
+                
+            device_path = device['device']
+            
+            subprocess.run([
+                'ffmpeg',
+                '-f', 'video4linux2',
+                '-i', device_path,
+                '-frames:v', '1',       # Capture one frame
+                '-s', '640x480',        # Lower resolution
+                '-y',                   # Overwrite output file
+                output_path
+            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=3)
+            
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                logger.info(f"Image captured with ffmpeg: {output_path}")
+                return output_path
+            return None
+        except Exception as e:
+            logger.error(f"Error capturing image with ffmpeg: {e}")
+            return None
+
+    def _capture_with_v4l2_grab(self, output_path):
+        """Capture image with v4l2-grab (fallback method)"""
+        try:
+            device = self.get_best_video_device()
+            if not device:
+                return None
+                
+            device_path = device['device']
+            
+            subprocess.run([
+                'v4l2-grab',
+                '-d', device_path,
+                '-o', output_path
+            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=3)
+            
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                logger.info(f"Image captured with v4l2-grab: {output_path}")
+                return output_path
+            return None
+        except Exception as e:
+            logger.error(f"Error capturing image with v4l2-grab: {e}")
+            return None
+
+    def _capture_with_uvccapture(self, output_path):
+        """Capture image with uvccapture (fallback method)"""
+        try:
+            device = self.get_best_video_device()
+            if not device:
+                return None
+                
+            device_path = device['device']
+            
+            subprocess.run([
+                'uvccapture',
+                '-d', device_path,
+                '-o', output_path
+            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=3)
+            
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                logger.info(f"Image captured with uvccapture: {output_path}")
+                return output_path
+            return None
+        except Exception as e:
+            logger.error(f"Error capturing image with uvccapture: {e}")
             return None
 
     def capture_photo(self):
         """
-        Chụp ảnh từ camera và lưu vào thư mục chỉ định
-        Thử nhiều phương pháp khác nhau để đảm bảo chụp được ảnh
+        Capture image from camera and save to specified directory
+        Try different methods to ensure success
         
         Returns:
-            str: Đường dẫn đến file ảnh đã chụp, hoặc None nếu thất bại
+            str: Path to captured image, or None if failed
         """
-        # Tạo thư mục nếu chưa tồn tại
+        # Create directory if it doesn't exist
         os.makedirs(PHOTO_DIR, exist_ok=True)
         
-        # Tạo tên file với timestamp
+        # Create filename with timestamp
         string_timestamp, _ = get_timestamp()
         filename = f"photo_{string_timestamp}.jpg"
         filepath = os.path.join(PHOTO_DIR, filename)
         
-        # Thử các phương pháp chụp ảnh khác nhau theo thứ tự ưu tiên
+        # Try different capture methods in order of preference
         
-        # Thử với USB camera trước (fswebcam) - phương pháp đã làm việc tốt trước đó
-        logger.info("Thử chụp ảnh bằng fswebcam (USB camera)...")
+        # Try USB camera first (fswebcam)
+        logger.info("Trying to capture image with fswebcam (USB camera)...")
         result = self._capture_with_fswebcam(filepath)
         if result:
             return result
         
-        # Nếu có PiCamera, thử dùng module PiCamera
+        # If PiCamera available, try PiCamera module
         if PICAMERA_AVAILABLE:
-            logger.info("Thử chụp ảnh bằng module PiCamera...")
+            logger.info("Trying to capture image with PiCamera module...")
             result = self._capture_with_picamera(filepath)
             if result:
                 return result
         
-        # Thử dùng libcamera-still (cho Raspberry Pi OS mới)
-        logger.info("Thử chụp ảnh bằng libcamera-still...")
+        # Try using libcamera-still (for newer Raspberry Pi OS)
+        logger.info("Trying to capture image with libcamera-still...")
         result = self._capture_with_libcamera(filepath)
         if result:
             return result
         
-        # Nếu các phương pháp chính không thành công, thử các phương pháp dự phòng
-        logger.info("Các phương pháp chính không thành công, thử phương pháp dự phòng...")
+        # Try fallback methods if primary methods fail
+        logger.info("Primary methods failed, trying fallback methods...")
         
-        # Thử dùng ffmpeg
+        # Try ffmpeg
         result = self._capture_with_ffmpeg(filepath)
         if result:
             return result
         
-        # Thử dùng v4l2-grab
+        # Try v4l2-grab
         result = self._capture_with_v4l2_grab(filepath)
         if result:
             return result
         
-        # Thử dùng uvccapture
+        # Try uvccapture
         result = self._capture_with_uvccapture(filepath)
         if result:
             return result
         
-        logger.error("Không thể chụp ảnh: Đã thử tất cả phương pháp nhưng không thành công")
+        logger.error("Cannot capture image: All methods failed")
         return None
 
-    def get_image_as_base64(self, image_path, quality=None):
+    def get_image_as_base64(self, image_path):
         """
-        Chuyển đổi hình ảnh thành chuỗi base64 (không xử lý chất lượng)
+        Convert image to base64 string
         
         Args:
-            image_path (str): Đường dẫn đến file hình ảnh
-            quality: Tham số không được sử dụng (giữ để tương thích)
+            image_path (str): Path to image file
             
         Returns:
-            str: Chuỗi base64 của dữ liệu hình ảnh
+            str: Base64 encoded image data
         """
         try:
-            # Đọc file trực tiếp thay vì qua PIL để tăng tốc độ
+            # Read file directly instead of through PIL to speed up
             with open(image_path, "rb") as image_file:
                 return base64.b64encode(image_file.read()).decode('utf-8')
         except Exception as e:
-            logger.error(f"Lỗi khi đọc file hình ảnh: {e}")
+            logger.error(f"Error reading image file: {e}")
             return None
     
-    def send_image_via_websocket(self, image_path, timestamp, quality="high"):
+    def send_image_via_websocket(self, image_path, timestamp):
         """
-        Gửi hình ảnh qua WebSocket theo định dạng server yêu cầu
+        Send image via WebSocket with format required by server
         
         Args:
-            image_path (str): Đường dẫn đến file hình ảnh
-            timestamp (float): Thời gian chụp ảnh
-            quality (str): Chất lượng hình ảnh ("high", "medium", "low")
+            image_path (str): Path to image file
+            timestamp (float): Time when image was captured
             
         Returns:
-            bool: True nếu gửi thành công, False nếu không
+            bool: True if sent successfully, False otherwise
         """
-        if not self.ws_connected:
-            logger.warning("Không có kết nối WebSocket, không thể gửi hình ảnh")
+        if not self.ws_client.ws_connected:
+            logger.warning("No WebSocket connection, cannot send image")
             return False
         
         try:
-            # Chuyển đổi hình ảnh thành base64
-            image_base64 = self.get_image_as_base64(image_path, quality)
+            # Convert image to base64
+            image_base64 = self.get_image_as_base64(image_path)
             if not image_base64:
                 return False
                 
-            # Tạo timestamp theo định dạng ISO 8601 cho phù hợp với server
+            # Create ISO 8601 timestamp format for server compatibility
             timestamp_str = datetime.datetime.fromtimestamp(timestamp).isoformat()
                 
-            # Tạo message theo định dạng server yêu cầu
+            # Create message in server-required format
             message = {
                 'image_base64': image_base64,
                 'timestamp': timestamp_str
             }
             
-            # Gửi qua WebSocket
-            self.ws.send(json.dumps(message))
-            logger.info(f"Đã gửi hình ảnh qua WebSocket lúc {timestamp_str}")
-            return True
+            # Send via WebSocket
+            result = self.ws_client.send_message(message)
+            if result:
+                logger.info(f"Image sent via WebSocket at {timestamp_str}")
+            return result
             
         except Exception as e:
-            logger.error(f"Lỗi khi gửi hình ảnh qua WebSocket: {e}")
+            logger.error(f"Error sending image via WebSocket: {e}")
             return False
     
-    def send_image_to_server(self, image_path, timestamp, quality="high"):
+    def capture_and_send_photo(self):
         """
-        Gửi hình ảnh đến server qua REST API
+        Capture image and send to server
         
-        Args:
-            image_path (str): Đường dẫn đến file hình ảnh
-            timestamp (float): Thời gian chụp ảnh
-            quality (str): Chất lượng hình ảnh ("high", "medium", "low")
-            
         Returns:
-            bool: True nếu gửi thành công, False nếu không
+            bool: True if successful, False otherwise
         """
-        if not os.path.exists(image_path):
-            logger.error(f"Không tìm thấy file hình ảnh: {image_path}")
-            return False
-            
-        try:
-            # Gửi file qua REST API
-            with open(image_path, 'rb') as image_file:
-                files = {
-                    'image': (os.path.basename(image_path), image_file, 'image/jpeg')
-                }
-                
-                data = {
-                    'timestamp': timestamp,
-                    'device_id': DEVICE_ID,
-                    'quality': quality
-                }
-                
-                logger.info(f"Đang gửi hình ảnh đến server: {os.path.basename(image_path)}")
-                success, response = make_api_request(
-                    url=IMAGE_API_ENDPOINT,
-                    method='POST',
-                    data=data,
-                    files=files
-                )
-                
-                if success:
-                    logger.info(f"Đã gửi hình ảnh thành công")
-                    return True
-                else:
-                    logger.error(f"Lỗi khi gửi hình ảnh: {response}")
-                    return False
-                    
-        except Exception as e:
-            logger.error(f"Lỗi khi gửi hình ảnh đến server: {e}")
-            return False
-    
-    def capture_and_send_photo(self, quality="high"):
-        """
-        Chụp ảnh và gửi đến server
-        
-        Args:
-            quality (str): Chất lượng hình ảnh ("high", "medium", "low")
-            
-        Returns:
-            bool: True nếu thành công, False nếu không
-        """
-        # Cập nhật trạng thái và bắt đầu đo thời gian
-        self.processing_status = "Đang chụp ảnh..."
+        # Update status and start timing
+        self.processing_status = "Capturing image..."
         capture_start_time = time.time()
         
-        # Tính khoảng thời gian từ lần chụp trước
+        # Calculate time since last capture
         capture_interval = capture_start_time - self.last_capture_time
         self.last_capture_time = capture_start_time
         
-        # Chụp ảnh
+        # Capture image
         image_path = self.capture_photo()
         
-        # Đo thời gian chụp ảnh
+        # Measure image capture time
         self.capture_duration = time.time() - capture_start_time
         
         if not image_path:
-            logger.error("Không thể chụp ảnh để gửi đến server")
+            logger.error("Cannot capture image to send to server")
             self.sent_fail_count += 1
-            self.processing_status = "Lỗi chụp ảnh"
-            self.current_photo_file = "Không có"
+            self.processing_status = "Image capture error"
+            self.current_photo_file = "None"
             return False
             
-        # Lưu tên file hiện tại
+        # Save current filename
         self.current_photo_file = os.path.basename(image_path)
         
-        # Tăng số ảnh đã chụp
+        # Increment photo count
         self.total_photos_taken += 1
             
-        # Gửi hình ảnh đến server
+        # Send image to server
         timestamp = time.time()
-        success = False
         
-        # Cập nhật trạng thái và bắt đầu đo thời gian gửi
-        self.processing_status = "Đang gửi ảnh..."
+        # Update status and start send timing
+        self.processing_status = "Sending image..."
         send_start_time = time.time()
         
-        if self.use_websocket and self.ws_connected:
-            # Ưu tiên gửi qua WebSocket nếu có kết nối
-            success = self.send_image_via_websocket(image_path, timestamp, quality)
-        else:
-            # Nếu không có kết nối WebSocket, gửi qua REST API
-            success = self.send_image_to_server(image_path, timestamp, quality)
+        # Send via WebSocket
+        success = self.send_image_via_websocket(image_path, timestamp)
         
-        # Đo thời gian gửi ảnh
+        # Measure sending time
         self.sending_duration = time.time() - send_start_time
         self.last_sent_time = time.time()
             
-        # Cập nhật biến đếm thành công/thất bại và trạng thái
+        # Update success/failure count and status
         if success:
             self.sent_success_count += 1
-            self.processing_status = "Đã gửi thành công"
-            # Cập nhật thời gian cho lần chụp tiếp theo
+            self.processing_status = "Sent successfully"
+            # Update next capture time
             self.next_photo_time = time.time() + self.interval
         else:
             self.sent_fail_count += 1
-            self.processing_status = "Lỗi gửi ảnh"
+            self.processing_status = "Send error"
             
         return success
 
+    @property
+    def ws_connected(self):
+        """
+        Property to check WebSocket connection status
+        
+        Returns:
+            bool: True if WebSocket is connected, False otherwise
+        """
+        return self.ws_client.ws_connected
 
-# Test module khi chạy trực tiếp
+
+# Test module when run directly
 if __name__ == "__main__":
-    # Khởi tạo client với khoảng thời gian 1 giây
-    camera_client = CameraClient(use_websocket=True, interval=1)  # Giảm xuống 1 giây
+    # Initialize client with 1 second interval
+    camera_client = CameraClient(interval=1)
     
-    # Bắt đầu client
+    # Start client
     camera_client.start()
     
     try:
-        # Cho WebSocket client chạy một lát
-        logger.info("Giữ kết nối và chụp ảnh trong 60 giây...")
+        # Let WebSocket client run for a while
+        logger.info("Maintaining connection and capturing images for 60 seconds...")
         time.sleep(60)
         
     except KeyboardInterrupt:
-        logger.info("Đã nhận tín hiệu dừng")
+        logger.info("Stop signal received")
     finally:
-        # Dừng client
+        # Stop client
         camera_client.stop()
-        logger.info("Đã kết thúc thử nghiệm")
+        logger.info("Test completed")

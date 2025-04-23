@@ -1,5 +1,5 @@
 # File: audio_client.py
-# Module xử lý ghi âm và gửi dữ liệu âm thanh đến server
+# Module for recording and sending audio to server
 
 import pyaudio
 import numpy as np
@@ -10,13 +10,12 @@ import queue
 import base64
 import json
 from io import BytesIO
-import websocket
-import logging
 from config import (
     AUDIO_WS_ENDPOINT, SAMPLE_RATE, CHANNELS, 
     AUDIO_DURATION, AUDIO_SLIDE_SIZE, DEVICE_ID
 )
 from utils import logger
+from websocket_client import WebSocketClient
 
 class AudioRecorder:
     """
@@ -27,8 +26,7 @@ class AudioRecorder:
     meaning there is a 2-second overlap between consecutive chunks.
     """
     def __init__(self, chunk_size=1024, sample_rate=SAMPLE_RATE, channels=CHANNELS, 
-                 window_size=AUDIO_DURATION, slide_size=AUDIO_SLIDE_SIZE, format=pyaudio.paInt16,
-                 ws_url=None):
+                 window_size=AUDIO_DURATION, slide_size=AUDIO_SLIDE_SIZE, format=pyaudio.paInt16):
         """
         Initialize the AudioRecorder with the specified parameters.
         
@@ -39,7 +37,6 @@ class AudioRecorder:
             window_size (int): Size of each audio segment in seconds (default 3)
             slide_size (int): How much the window slides each time in seconds (default 1)
             format: PyAudio format constant
-            ws_url (str): URL of the WebSocket endpoint
         """
         self.chunk_size = chunk_size
         self.sample_rate = sample_rate
@@ -48,13 +45,9 @@ class AudioRecorder:
         self.window_size = window_size
         self.slide_size = slide_size
         
-        # Khởi tạo URL WebSocket với client_id
-        if ws_url is None:
-            # Sử dụng định dạng URL "wss://domain/ws/{client_id}"
-            self.ws_url = f"{AUDIO_WS_ENDPOINT}/{DEVICE_ID}"
-            logger.info(f"WebSocket URL: {self.ws_url}")
-        else:
-            self.ws_url = ws_url
+        # WebSocket URL
+        ws_url = f"{AUDIO_WS_ENDPOINT}/{DEVICE_ID}"
+        logger.info(f"Audio WebSocket URL: {ws_url}")
         
         self.audio = pyaudio.PyAudio()
         self.stream = None
@@ -67,172 +60,13 @@ class AudioRecorder:
         self.save_counter = 0
         self.processing_thread = None
         
-        # WebSocket related attributes
-        self.ws = None
-        self.ws_connected = False
-        self.ws_thread = None
+        # Create WebSocket client
+        self.ws_client = WebSocketClient(
+            ws_url=ws_url,
+            device_id=DEVICE_ID,
+            client_type="audio"
+        )
         self.last_ws_status = "Not connected"
-
-    def connect_websocket(self):
-        """
-        Establish WebSocket connection with the server.
-        
-        This method initializes the WebSocket connection and sets up all the necessary
-        callback handlers for WebSocket events (message, error, close, open).
-        Runs the WebSocket connection in a separate daemon thread.
-        """
-        try:
-            # Thêm header xác thực nếu cần
-            headers = {
-                "Authorization": f"Bearer {DEVICE_ID}",
-                "X-Device-ID": DEVICE_ID
-            }
-            
-            logger.info(f"Đang kết nối WebSocket tới: {self.ws_url}")
-            websocket.enableTrace(True)
-            self.ws = websocket.WebSocketApp(
-                self.ws_url,
-                on_message=self._on_ws_message,
-                on_error=self._on_ws_error,
-                on_close=self._on_ws_close,
-                on_open=self._on_ws_open,
-                header=headers
-            )
-            self.ws_thread = threading.Thread(target=self.ws.run_forever)
-            self.ws_thread.daemon = True
-            self.ws_thread.start()
-        except Exception as e:
-            logger.error(f"WebSocket connection error: {str(e)}")
-            self.ws_connected = False
-            self.last_ws_status = f"Connection error: {str(e)}"
-
-    def _on_ws_message(self, ws, message):
-        """
-        Handle incoming WebSocket messages.
-        
-        Processes messages received from the server, including predictions and alerts.
-        Updates the connection status based on the message type.
-        
-        Args:
-            ws: WebSocket connection instance
-            message: Message received from the server
-        """
-        try:
-            data = json.loads(message)
-            if data.get("type") == "prediction":
-                logger.info(f"Prediction received: {data}")
-                self.last_ws_status = "Prediction received"
-            elif data.get("type") == "alert":
-                logger.info(f"Alert received: {data}")
-                self.last_ws_status = "Alert received"
-            elif "error" in data:
-                logger.error(f"Error from server: {data['error']}")
-                self.last_ws_status = f"Server error: {data['error']}"
-        except Exception as e:
-            logger.error(f"Error processing WebSocket message: {e}")
-
-    def _on_ws_error(self, ws, error):
-        """
-        Handle WebSocket errors.
-        
-        Updates connection status and logs the error when a WebSocket error occurs.
-        
-        Args:
-            ws: WebSocket connection instance
-            error: Error information
-        """
-        logger.error(f"WebSocket error: {error}")
-        self.ws_connected = False
-        self.last_ws_status = f"Error: {error}"
-
-    def _on_ws_close(self, ws, close_status_code, close_msg):
-        """
-        Handle WebSocket connection close.
-        
-        Updates connection status when the WebSocket connection is closed.
-        
-        Args:
-            ws: WebSocket connection instance
-            close_status_code: Status code for the connection closure
-            close_msg: Message describing why the connection was closed
-        """
-        logger.info(f"WebSocket connection closed: {close_msg}")
-        self.ws_connected = False
-        self.last_ws_status = "Disconnected"
-
-    def _on_ws_open(self, ws):
-        """
-        Handle WebSocket connection open.
-        
-        Updates connection status when the WebSocket connection is successfully established.
-        
-        Args:
-            ws: WebSocket connection instance
-        """
-        logger.info("WebSocket connection established")
-        self.ws_connected = True
-        self.last_ws_status = "Connected"
-        
-        # Gửi thông tin thiết bị
-        device_info = {
-            'type': 'connect',
-            'client_id': DEVICE_ID,
-            'timestamp': time.time()
-        }
-        self.ws.send(json.dumps(device_info))
-        logger.info(f"Đã gửi ID thiết bị {DEVICE_ID} tới server")
-
-    def send_to_websocket(self, audio_data, chunk_id):
-        """
-        Send audio data through WebSocket connection.
-        
-        Converts audio data to WAV format, encodes it as base64, and sends it through
-        the WebSocket connection with appropriate metadata.
-        
-        Args:
-            audio_data (numpy.ndarray): Audio data to send (3 seconds)
-            chunk_id (str): Identifier for this audio chunk
-        """
-        if not self.ws_connected:
-            return
-
-        try:
-            # Convert audio data to WAV format in memory
-            buffer = BytesIO()
-            wf = wave.open(buffer, 'wb')
-            wf.setnchannels(self.channels)
-            wf.setsampwidth(self.audio.get_sample_size(self.format))
-            wf.setframerate(self.sample_rate)
-            wf.writeframes(audio_data.tobytes())
-            wf.close()
-            
-            # Get the WAV data from the buffer
-            buffer.seek(0)
-            wav_data = buffer.read()
-            
-            # Encode the WAV data as base64
-            encoded_data = base64.b64encode(wav_data).decode('utf-8')
-            
-            # Prepare the payload
-            payload = {
-                'type': 'audio',
-                'chunk_id': chunk_id,
-                'timestamp': time.time(),
-                'sample_rate': self.sample_rate,
-                'channels': self.channels,
-                'device_id': DEVICE_ID,
-                'audio_data': encoded_data
-            }
-            
-            # Send through WebSocket
-            self.ws.send(json.dumps(payload))
-            self.last_ws_status = "Data sent"
-            logger.info(f"Đã gửi âm thanh qua WebSocket: {chunk_id}")
-            
-        except Exception as e:
-            logger.error(f"Error sending audio through WebSocket: {e}")
-            self.ws_connected = False
-            self.last_ws_status = f"Send error: {str(e)}"
 
     def start_recording(self):
         """
@@ -248,7 +82,7 @@ class AudioRecorder:
             return
             
         # Connect to WebSocket first
-        self.connect_websocket()
+        self.ws_client.connect()
         
         self.is_recording = True
         self.audio_buffer = []
@@ -269,7 +103,7 @@ class AudioRecorder:
         self.processing_thread = threading.Thread(target=self._process_audio)
         self.processing_thread.daemon = True
         self.processing_thread.start()
-        logger.info("Đã bắt đầu ghi âm với chế độ sliding window")
+        logger.info("Started audio recording with sliding window")
         
     def _process_audio(self):
         """
@@ -332,7 +166,7 @@ class AudioRecorder:
         chunk_id = f"audio_chunk_{self.save_counter}"
         
         # Send to WebSocket if connected
-        if self.ws_connected:
+        if self.ws_client.ws_connected:
             ws_send_thread = threading.Thread(
                 target=self.send_to_websocket,
                 args=(window_data, chunk_id)
@@ -341,7 +175,59 @@ class AudioRecorder:
             ws_send_thread.start()
         
         self.save_counter += 1
+    
+    def send_to_websocket(self, audio_data, chunk_id):
+        """
+        Send audio data through WebSocket connection.
         
+        Converts audio data to WAV format, encodes it as base64, and sends it through
+        the WebSocket connection with appropriate metadata.
+        
+        Args:
+            audio_data (numpy.ndarray): Audio data to send (3 seconds)
+            chunk_id (str): Identifier for this audio chunk
+        """
+        if not self.ws_client.ws_connected:
+            return
+
+        try:
+            # Convert audio data to WAV format in memory
+            buffer = BytesIO()
+            wf = wave.open(buffer, 'wb')
+            wf.setnchannels(self.channels)
+            wf.setsampwidth(self.audio.get_sample_size(self.format))
+            wf.setframerate(self.sample_rate)
+            wf.writeframes(audio_data.tobytes())
+            wf.close()
+            
+            # Get the WAV data from the buffer
+            buffer.seek(0)
+            wav_data = buffer.read()
+            
+            # Encode the WAV data as base64
+            encoded_data = base64.b64encode(wav_data).decode('utf-8')
+            
+            # Prepare the payload
+            payload = {
+                'type': 'audio',
+                'chunk_id': chunk_id,
+                'timestamp': time.time(),
+                'sample_rate': self.sample_rate,
+                'channels': self.channels,
+                'device_id': DEVICE_ID,
+                'audio_data': encoded_data
+            }
+            
+            # Send through WebSocket
+            result = self.ws_client.send_message(payload)
+            if result:
+                self.last_ws_status = "Data sent"
+                logger.info(f"Audio sent via WebSocket: {chunk_id}")
+            
+        except Exception as e:
+            logger.error(f"Error sending audio through WebSocket: {e}")
+            self.last_ws_status = f"Send error: {str(e)}"
+    
     def stop_recording(self):
         """
         Stop recording and clean up resources.
@@ -357,16 +243,13 @@ class AudioRecorder:
             self.stream.stop_stream()
             self.stream.close()
         
-        if self.ws:
-            self.ws.close()
+        # Close WebSocket
+        self.ws_client.close()
         
         if self.processing_thread and self.processing_thread.is_alive():
             self.processing_thread.join(timeout=1.0)
-
-        if self.ws_thread and self.ws_thread.is_alive():
-            self.ws_thread.join(timeout=1.0)
         
-        logger.info("Đã dừng ghi âm")
+        logger.info("Audio recording stopped")
         
     def close(self):
         """
@@ -376,25 +259,35 @@ class AudioRecorder:
         """
         self.stop_recording()
         self.audio.terminate()
+        
+    @property
+    def ws_connected(self):
+        """
+        Property to check WebSocket connection status
+        
+        Returns:
+            bool: True if WebSocket is connected, False otherwise
+        """
+        return self.ws_client.ws_connected
 
 
-# Test module khi chạy trực tiếp
+# Test module when run directly
 if __name__ == "__main__":
-    # Khởi tạo AudioRecorder
+    # Initialize AudioRecorder
     audio_recorder = AudioRecorder()
     
     try:
-        # Bắt đầu ghi âm
+        # Start recording
         audio_recorder.start_recording()
         
-        # Cho phép ghi âm trong 60 giây
-        logger.info("Ghi âm và gửi trong 60 giây...")
+        # Record for 60 seconds
+        logger.info("Recording and sending audio for 60 seconds...")
         time.sleep(60)
         
     except KeyboardInterrupt:
-        logger.info("Đã nhận tín hiệu dừng")
+        logger.info("Stop signal received")
     finally:
-        # Dừng ghi âm và giải phóng tài nguyên
+        # Stop recording and release resources
         audio_recorder.stop_recording()
         audio_recorder.close()
-        logger.info("Đã kết thúc thử nghiệm")
+        logger.info("Test completed")
