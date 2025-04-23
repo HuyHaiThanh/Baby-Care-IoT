@@ -5,19 +5,45 @@ import os
 import time
 import datetime
 import logging
+import logging.handlers
 import requests
 import json
 import netifaces
 from config import DEVICE_NAME, DEVICE_ID, CONNECTION_TIMEOUT, MAX_RETRIES, RETRY_DELAY
 
-# Cấu hình logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+# Tạo thư mục logs nếu chưa tồn tại
+logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+os.makedirs(logs_dir, exist_ok=True)
 
+# Cấu hình logging
 logger = logging.getLogger('pi-client')
+logger.setLevel(logging.INFO)
+log_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
+# Cấu hình để ghi log ra console
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_format)
+logger.addHandler(console_handler)
+
+# Cấu hình để ghi log vào file với rotation
+# Tạo file log mới mỗi ngày hoặc khi file vượt quá 5MB
+file_handler = logging.handlers.TimedRotatingFileHandler(
+    filename=os.path.join(logs_dir, 'babycare.log'),
+    when='midnight',
+    backupCount=7  # Giữ tối đa 7 file log
+)
+file_handler.setFormatter(log_format)
+logger.addHandler(file_handler)
+
+# Thêm một file handler riêng cho các lỗi (level ERROR trở lên)
+error_file_handler = logging.handlers.RotatingFileHandler(
+    filename=os.path.join(logs_dir, 'error.log'),
+    maxBytes=2*1024*1024,  # 2MB
+    backupCount=5  # Giữ tối đa 5 file log lỗi
+)
+error_file_handler.setFormatter(log_format)
+error_file_handler.setLevel(logging.ERROR)
+logger.addHandler(error_file_handler)
 
 def get_ip_addresses():
     """
