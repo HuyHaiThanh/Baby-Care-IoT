@@ -124,7 +124,7 @@ def main():
         print("\n❌ Error: Cannot start any module. Program will exit.")
         return
     
-    # Print information about running modules
+    # Print initial information about running modules
     print("\n" + "-" * 60)
     print("System Information:")
     print(f"• Audio mode: {'Running' if audio_client else 'Disabled'}")
@@ -140,117 +140,120 @@ def main():
         print(f"• Capture photos: every {args.photo_interval} seconds")
     
     print("-" * 60)
-    print("\nSystem running. Press Ctrl+C to stop.\n")
+    print("\nSystem running. Press Ctrl+C to stop.")
+    print("Status display will start in 3 seconds...")
+    time.sleep(3)  # Give time to read initial info
     
-    # Update interval (seconds)
-    # Increase refresh interval to reduce flickering
+    # Update interval
     update_interval = 1.0
     
-    # Store previous display content to avoid unnecessary screen clearing
-    last_display = ""
-    
-    # Main loop to display system status
-    try:
-        while running:
-            # Calculate runtime
-            runtime = time.time() - start_time
-            hours, remainder = divmod(int(runtime), 3600)
-            minutes, seconds = divmod(remainder, 60)
-            runtime_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-            
-            # Create new display content
-            current_time = time.strftime("%H:%M:%S", time.localtime())
-            
-            # Optimized compact display - limit to 25 lines
-            display = []
-            display.append("\n" + "=" * 60)
-            display.append(f"BABY MONITORING SYSTEM - Raspberry Pi Client - Runtime: {runtime_str}")
-            display.append("=" * 60)
-            
-            # Compact server info on a single line
-            display.append(f"\n[{current_time}] Status: Audio:{AUDIO_SERVER_HOST} | Image:{IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
-            
-            # WebSocket status in a compact format
-            ws_line = "• WebSocket: "
-            if audio_client:
-                audio_ws = "✓" if audio_client.ws_connected else "✗"
-                ws_line += f"Audio[{audio_ws}] "
-            if camera_client:
-                camera_ws = "✓" if camera_client.ws_connected else "✗" 
-                ws_line += f"Image[{camera_ws}]"
-            display.append(ws_line)
-            
-            # Add audio information if audio module is running
-            if audio_client:
-                audio_status = "Recording" if audio_client.is_recording else "Paused"
-                # Current file and status in a single line
-                current_audio = f"audio_chunk_{audio_client.save_counter}"
-                display.append(f"• Audio: {audio_status} | File: {current_audio} | Status: {audio_client.last_ws_status}")
-                
-                # Calculate processing time (approximate)
-                audio_process_time = audio_client.window_size * 0.8  # Estimate
-                display.append(f"  - Process: {audio_process_time:.1f}s | Send: {audio_client.window_size/10:.1f}s | Processed: {audio_client.save_counter} samples")
-                
-                # Queue information
-                queue_size = audio_client.chunk_queue.qsize() if hasattr(audio_client.chunk_queue, 'qsize') else 0
-                display.append(f"  - Sent: {audio_client.save_counter} | Queue: {queue_size} chunks")
-                
-                # Technical info in a single line
-                display.append(f"  - Window: {audio_client.window_size}s | Slide: {audio_client.slide_size}s | {audio_client.sample_rate} Hz, {audio_client.channels}ch")
-            
-            # Add image information if camera module is running
-            if camera_client:
-                # Format time with 1 decimal place
-                capture_time = f"{camera_client.capture_duration:.1f}s"
-                sending_time = f"{camera_client.sending_duration:.1f}s"
-                
-                # Capture interval and current file in a single line
-                display.append(f"• Images: Every {args.photo_interval}s | File: {camera_client.current_photo_file} | Status: {camera_client.processing_status}")
-                
-                # Timing information
-                display.append(f"  - Capture: {capture_time} | Send: {sending_time} | Resolution: 640x480px")
-                
-                # Image stats with queue info
-                queued_images = camera_client.sent_fail_count  # Approximation of queued items
-                display.append(f"  - Captured: {camera_client.total_photos_taken} | Sent: {camera_client.sent_success_count} | Queue: {queued_images}")
-            
-            # Combine into a string to display
-            current_display = "\n".join(display)
-            
-            # Only clear and update screen when content changes
-            if current_display != last_display:
-                # Clear screen only when necessary and not in debug mode
-                if not args.debug:
-                    if os.name == 'posix':  # Linux/Mac
-                        os.system('clear')
-                    elif os.name == 'nt':   # Windows
-                        os.system('cmd /c cls')
-                
-                # Print new content
-                print(current_display)
-                
-                # Update displayed content
-                last_display = current_display
-            
-            # Sleep for update interval
-            time.sleep(update_interval)
-            
-    except KeyboardInterrupt:
-        logger.info("Stop signal received from user")
-    finally:
-        # Stop clients
-        print("\nStopping system...")
+    # Function to get status information
+    def get_status_display():
+        runtime = time.time() - start_time
+        hours, remainder = divmod(int(runtime), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        runtime_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        current_time = time.strftime("%H:%M:%S", time.localtime())
         
+        status_lines = []
+        status_lines.append("=" * 60)
+        status_lines.append(f"BABY MONITORING SYSTEM - Runtime: {runtime_str}")
+        status_lines.append("=" * 60)
+        status_lines.append(f"[{current_time}] Status: Audio:{AUDIO_SERVER_HOST} | Image:{IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
+        
+        # WebSocket information
+        ws_line = "• WebSocket: "
         if audio_client:
-            print(">> Stopping audio module...")
-            audio_client.stop_recording()
-            audio_client.close()
-            
+            audio_ws = "✓" if audio_client.ws_connected else "✗"
+            ws_line += f"Audio[{audio_ws}] "
         if camera_client:
-            print(">> Stopping image module...")
-            camera_client.stop()
+            camera_ws = "✓" if camera_client.ws_connected else "✗" 
+            ws_line += f"Image[{camera_ws}]"
+        status_lines.append(ws_line)
+        
+        # Audio information
+        if audio_client:
+            audio_status = "Recording" if audio_client.is_recording else "Paused"
+            current_file = f"audio_chunk_{audio_client.save_counter}"
+            status_lines.append(f"• Audio: {audio_status}")
+            status_lines.append(f"  - File: {current_file}")
+            status_lines.append(f"  - Status: {audio_client.last_ws_status}")
+            status_lines.append(f"  - Process time: ~{audio_client.window_size*0.8:.1f}s | Send time: ~{audio_client.window_size/10:.1f}s")
+            status_lines.append(f"  - Processed: {audio_client.save_counter} samples")
             
-        print("\n✓ System stopped safely")
+            # Queue information
+            queue_size = audio_client.chunk_queue.qsize() if hasattr(audio_client.chunk_queue, 'qsize') else 0
+            status_lines.append(f"  - Sent: {audio_client.save_counter} | Queue: {queue_size} chunks")
+            status_lines.append(f"  - Window: {audio_client.window_size}s | Slide: {audio_client.slide_size}s | {audio_client.sample_rate} Hz, {audio_client.channels}ch")
+        
+        # Camera information
+        if camera_client:
+            capture_time = f"{camera_client.capture_duration:.1f}s"
+            sending_time = f"{camera_client.sending_duration:.1f}s"
+            
+            status_lines.append(f"• Images: Every {args.photo_interval}s")
+            status_lines.append(f"  - File: {camera_client.current_photo_file}")
+            status_lines.append(f"  - Status: {camera_client.processing_status}")
+            status_lines.append(f"  - Capture: {capture_time} | Send: {sending_time}")
+            status_lines.append(f"  - Resolution: 640x480px")
+            status_lines.append(f"  - Captured: {camera_client.total_photos_taken} | Sent: {camera_client.sent_success_count} | Queue: {camera_client.sent_fail_count}")
+        
+        return status_lines
+    
+    # Check if we're in a terminal that supports ANSI escape codes
+    if sys.stdout.isatty() and not args.debug:
+        # Use ANSI escape codes for clearing screen and cursor positioning
+        CLEAR_SCREEN = "\033[2J\033[1;1H"  # Clear entire screen and move cursor to top-left
+        
+        # Main display loop
+        try:
+            while running:
+                status_lines = get_status_display()
+                # Clear screen and print updated status
+                print(CLEAR_SCREEN, end='')
+                print("\n".join(status_lines))
+                time.sleep(update_interval)
+                
+        except KeyboardInterrupt:
+            logger.info("Stop signal received from user")
+    else:
+        # Fall back to static display for non-terminal or debug mode
+        print("\nRunning in static display mode (debug or non-terminal).")
+        print("Status information will be logged but not continuously displayed.")
+        
+        try:
+            # Print status once and then just wait
+            status_lines = get_status_display()
+            print("\n".join(status_lines))
+            
+            while running:
+                time.sleep(update_interval)
+                if args.debug:
+                    # In debug mode, periodically print just a simple status line
+                    runtime = time.time() - start_time
+                    mins, secs = divmod(int(runtime), 60)
+                    print(f"[{mins:02d}:{secs:02d}] Running: A:{audio_client.save_counter if audio_client else 'N/A'} | C:{camera_client.total_photos_taken if camera_client else 'N/A'}")
+                
+        except KeyboardInterrupt:
+            logger.info("Stop signal received from user")
+    
+    # Cleanup on exit
+    print("\nStopping system...")
+    
+    if audio_client:
+        print(">> Stopping audio module...")
+        audio_client.stop_recording()
+        audio_client.close()
+        
+    if camera_client:
+        print(">> Stopping image module...")
+        camera_client.stop()
+        
+    # Show final status
+    print("\nFinal system status:")
+    final_status = get_status_display()
+    print("\n".join(final_status))
+    print("\n✓ System stopped safely")
 
 if __name__ == "__main__":
     main()
