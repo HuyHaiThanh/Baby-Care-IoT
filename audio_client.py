@@ -203,14 +203,25 @@ class AudioClient:
             try:
                 if hasattr(self, 'ws') and self.ws:
                     self.ws.close()
-                    
-                logger.info(f"Đang kết nối tới {AUDIO_WS_ENDPOINT}/{DEVICE_ID}")
+                   
+                # Thêm token xác thực vào URL WebSocket 
+                auth_token = f"?token={DEVICE_ID}"
+                websocket_url = f"{AUDIO_WS_ENDPOINT}/{DEVICE_ID}{auth_token}"
+                logger.info(f"Đang kết nối tới {websocket_url}")
+                
+                # Thêm header xác thực
+                headers = {
+                    "Authorization": f"Bearer {DEVICE_ID}",
+                    "X-Device-ID": DEVICE_ID
+                }
+                
                 self.ws = websocket.WebSocketApp(
-                    f"{AUDIO_WS_ENDPOINT}/{DEVICE_ID}",
+                    websocket_url,
                     on_open=on_open,
                     on_message=on_message,
                     on_error=on_error,
-                    on_close=on_close
+                    on_close=on_close,
+                    header=headers
                 )
                 self.ws.run_forever()
             except Exception as e:
@@ -576,7 +587,7 @@ class AudioClient:
     
     def send_audio_via_websocket(self, audio_data, timestamp):
         """
-        Gửi dữ liệu âm thanh qua WebSocket theo định dạng yêu cầu của server
+        Gửi dữ liệu âm thanh qua WebSocket với cấu trúc đơn giản hóa
         
         Args:
             audio_data (numpy.ndarray): Dữ liệu âm thanh
@@ -593,11 +604,10 @@ class AudioClient:
             # Chuyển đổi dữ liệu âm thanh thành base64
             audio_base64 = self.get_audio_as_base64(audio_data)
             
-            # Tạo message theo định dạng yêu cầu của server
+            # Tạo message với cấu trúc đơn giản hóa (giống với camera_client)
             message = {
+                'type': 'audio',  # Thêm trường type để server phân biệt loại dữ liệu
                 'timestamp': timestamp,
-                'sample_rate': self.sample_rate,
-                'channels': self.channels,
                 'audio_data': audio_base64
             }
             
