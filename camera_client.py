@@ -402,47 +402,138 @@ class CameraClient:
     def capture_with_ffmpeg(self, output_path):
         """Chụp ảnh bằng ffmpeg (nhanh và hiệu quả)"""
         try:
-            # Tìm đường dẫn thiết bị webcam nhanh nhất có thể
+            # Đảm bảo thư mục tồn tại
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            # Tìm thiết bị camera
             device_path = '/dev/video0'  # Mặc định trên Linux
             
-            # Với Windows, sử dụng thiết bị dshow
+            # Với Windows, sử dụng DirectShow
             if os.name == 'nt':
-                # Sử dụng DirectShow trên Windows
-                result = subprocess.run([
+                # Thử với thiết bị DirectShow và không chỉ định định dạng đầu vào
+                command = [
                     'ffmpeg',
                     '-y',                       # Ghi đè file nếu có
                     '-f', 'dshow',              # Format DirectShow cho Windows
-                    '-video_size', '640x360',   # Độ phân giải rất thấp để tăng tốc
-                    '-framerate', '30',         # Framerate cao để lấy frame nhanh
-                    '-i', 'video=Webcam',      # Tên thiết bị webcam thông thường
+                    '-video_size', '320x240',   # Độ phân giải thấp
+                    '-i', 'video=Webcam',       # Tên thiết bị webcam thông thường
                     '-vframes', '1',            # Chỉ lấy 1 frame
-                    '-q:v', '10',               # Chất lượng thấp (10-31)
-                    '-loglevel', 'quiet',       # Không hiển thị thông tin
+                    '-q:v', '15',               # Chất lượng thấp
+                    '-loglevel', 'error',       # Chỉ hiển thị lỗi
                     output_path
-                ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=2)
+                ]
             else:
-                # Với Linux, sử dụng v4l2
-                result = subprocess.run([
+                # Cho Linux, thử không chỉ định định dạng đầu vào để tránh lỗi
+                command = [
                     'ffmpeg',
                     '-y',                       # Ghi đè file nếu có
                     '-f', 'v4l2',               # Format v4l2 cho Linux
-                    '-input_format', 'mjpeg',   # Định dạng đầu vào MJPEG (nhanh hơn)
-                    '-video_size', '640x360',   # Độ phân giải rất thấp
+                    '-video_size', '160x120',   # Độ phân giải cực thấp để tăng tốc
                     '-i', device_path,          # Thiết bị camera
                     '-vframes', '1',            # Chỉ lấy 1 frame
-                    '-q:v', '10',               # Chất lượng thấp để tăng tốc
-                    '-loglevel', 'quiet',       # Không hiển thị thông tin
+                    '-q:v', '15',               # Chất lượng thấp để tăng tốc
+                    '-loglevel', 'error',       # Chỉ hiển thị lỗi
                     output_path
-                ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=2)
+                ]
+            
+            # Tăng timeout lên 5 giây để cho webcam thời gian khởi động
+            logger.info(f"Đang chụp ảnh với ffmpeg từ {device_path if os.name != 'nt' else 'webcam'}")
+            result = subprocess.run(command, stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=5)
             
             # Kiểm tra file đã được tạo thành công
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 return output_path
-            else:
-                return None
+                
+            # Nếu thất bại với cấu hình đầu tiên, thử cấu hình thứ hai (trên Linux)
+            if os.name != 'nt':
+                logger.info("Thử lại với cấu hình khác...")
+                # Thử với yuv422p và không chỉ định định dạng đầu vào
+                command_alt = [
+                    'ffmpeg',
+                    '-y',
+                    '-f', 'v4l2',
+                    '-s', '160x120',           # Sử dụng -s thay vì -video_size
+                    '-i', device_path,
+                    '-vframes', '1',
+                    '-q:v', '20',              # Chất lượng thấp hơn
+                    '-loglevel', 'error',
+                    output_path
+                ]
+                
+                result = subprocess.run(command_alt, stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=5)
+                
+                # Kiểm tra file đã được tạo thành công
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    return output_path
+            
+            # Nếu vẫn thất bại, trả về lỗi
+            stderr = result.stderr.decode()
+            logger.error(f"Lỗi ffmpeg: {stderr}")
+            return None
                     
+        except subprocess.TimeoutExpired:
+            logger.error(f"Quá thời gian chụp ảnh với ffmpeg - thử phương pháp khác")
+            # Thử chụp với fswebcam trong trường hợp ffmpeg bị timeout
+            if os.name != 'nt':
+                try:
+                    logger.info("Thử chụp với fswebcam thay thế...")
+                    subprocess.run([
+                        'fswebcam',
+                        '-q',                   # Chế độ im lặng
+                        '-r', '160x120',        # Độ phân giải thấp
+                        '--no-banner',          # Không hiển thị banner
+                        '-d', device_path,      # Thiết bị camera
+                        '--jpeg', '50',         # Chất lượng JPEG thấp
+                        '-F', '1',              # Số frames để bỏ qua (giảm xuống 1)
+                        output_path             # Đường dẫn file đầu ra
+                    ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=5)
+                    
+                    # Kiểm tra file có được tạo thành công
+                    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                        logger.info("Đã chụp thành công với fswebcam")
+                        return output_path
+                except Exception as e:
+                    logger.error(f"Fswebcam thất bại: {e}")
+            return None
         except Exception as e:
             logger.error(f"Lỗi khi chụp ảnh với ffmpeg: {e}")
+            return None
+    
+    def capture_with_opencv(self, output_path):
+        """Chụp ảnh bằng OpenCV (nhanh và đơn giản)"""
+        try:
+            import cv2
+            # Mở camera
+            cap = cv2.VideoCapture(0)  # Sử dụng camera đầu tiên
+            
+            if not cap.isOpened():
+                logger.error("Không thể mở camera với OpenCV")
+                return None
+            
+            # Đặt độ phân giải thấp để tăng tốc
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+            
+            # Đọc frame
+            ret, frame = cap.read()
+            cap.release()  # Giải phóng camera ngay lập tức
+            
+            if not ret:
+                logger.error("Không thể đọc frame từ camera")
+                return None
+                
+            # Lưu frame
+            cv2.imwrite(output_path, frame)
+            
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                logger.info(f"Đã chụp ảnh với OpenCV: {output_path}")
+                return output_path
+            return None
+        except ImportError:
+            logger.warning("Không tìm thấy thư viện OpenCV")
+            return None
+        except Exception as e:
+            logger.error(f"Lỗi khi chụp ảnh với OpenCV: {e}")
             return None
     
     def capture_photo(self):
@@ -460,12 +551,19 @@ class CameraClient:
         filename = f"photo_{string_timestamp}.jpg"
         filepath = os.path.join(PHOTO_DIR, filename)
         
-        # Sử dụng ffmpeg để chụp ảnh nhanh
+        # Đầu tiên thử dùng OpenCV vì nó thường nhanh và đáng tin cậy hơn
+        logger.info("Đang thử chụp ảnh bằng OpenCV...")
+        result = self.capture_with_opencv(filepath)
+        if result:
+            return result
+        
+        # Nếu OpenCV thất bại, thử với ffmpeg
+        logger.info("OpenCV thất bại hoặc không có sẵn, đang thử với ffmpeg...")
         result = self.capture_with_ffmpeg(filepath)
         if result:
             return result
             
-        logger.error("Không thể chụp ảnh: ffmpeg thất bại")
+        logger.error("Không thể chụp ảnh: Cả OpenCV và ffmpeg đều thất bại")
         return None
     
     def get_image_as_base64(self, image_path, quality="high"):
