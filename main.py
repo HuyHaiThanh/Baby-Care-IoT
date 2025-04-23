@@ -190,8 +190,20 @@ def main():
             capture_time = f"{camera_client.capture_duration:.1f}s"
             sending_time = f"{camera_client.sending_duration:.1f}s"
             
+            # Đảm bảo trạng thái camera hiển thị chính xác
+            camera_status = str(camera_client.processing_status).strip()
+            # Nếu trạng thái camera có vẻ bị ghép lại (có thể xảy ra trong trường hợp cập nhật cùng lúc)
+            if "error" in camera_status.lower() and "image" in camera_status.lower():
+                if "Send error" in camera_status:
+                    camera_status = "Send error"
+                elif "Capturing image" in camera_status:
+                    camera_status = "Capturing image..."
+                else:
+                    # Trường hợp không xác định, hiển thị trạng thái gốc
+                    camera_status = "Processing"
+            
             status_lines.append(f"• Images: Every {args.photo_interval}s")
-            status_lines.append(f"  - Status: {camera_client.processing_status}")
+            status_lines.append(f"  - Status: {camera_status}")
             status_lines.append(f"  File: {camera_client.current_photo_file}")
             status_lines.append(f"  Resolution: 640x480px")
             status_lines.append(f"  - Capture: {capture_time} | Send: {sending_time}")
