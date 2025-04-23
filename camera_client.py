@@ -258,86 +258,135 @@ class CameraClient:
             
         return None
     
-    def capture_with_fswebcam(self, output_path):
+    def _capture_with_fswebcam(self, output_path):
         """Chụp ảnh bằng fswebcam (cho USB camera)"""
         try:
-            # Sử dụng thiết bị mặc định /dev/video0
-            device_path = '/dev/video0'
+            # Tìm thiết bị camera
+            device = self.get_best_video_device()
+            if not device:
+                logger.error("Không tìm thấy thiết bị camera USB")
+                return None
+                    
+            # Dùng fswebcam để chụp ảnh
+            device_path = device['device']
             logger.info(f"Bắt đầu chụp ảnh từ thiết bị {device_path}...")
             
-            # Chụp ảnh với fswebcam và sử dụng cài đặt phù hợp với camera
-            command = [
+            # Đảm bảo thư mục tạm tồn tại
+            os.makedirs(TEMP_DIR, exist_ok=True)
+            
+            # Đường dẫn đến file tạm
+            temp_path = os.path.join(TEMP_DIR, "temp_capture.jpg")
+            
+            # Chụp ảnh với fswebcam (sử dụng cài đặt từ code tham khảo)
+            subprocess.run([
                 'fswebcam',
-                '-q',                   # Chế độ im lặng
-                '-r', '640x480',        # Độ phân giải tương thích với camera
+                '-q',                   # Chế độ im lặng (không hiển thị banner)
+                '-r', '1280x720',       # Độ phân giải cao hơn
                 '--no-banner',          # Không hiển thị banner
                 '-d', device_path,      # Thiết bị camera
-                '--jpeg', '85',         # Chất lượng JPEG tốt hơn
-                '-S', '2',              # Bỏ qua 2 frame đầu để camera ổn định
-                '-p', 'MJPG',          # Sử dụng định dạng MJPG mà camera hỗ trợ
-                '--set', 'brightness=60%', # Điều chỉnh độ sáng
-                '--set', 'contrast=50%',   # Điều chỉnh độ tương phản
-                output_path             # Lưu trực tiếp vào đường dẫn đích
-            ]
-            
-            logger.info(f"Chạy lệnh: {' '.join(command)}")
-            
-            # Tăng timeout lên 10 giây để tránh bị timeout
-            subprocess.run(command, stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=10)
+                '--jpeg', '85',         # Chất lượng JPEG
+                '-F', '5',              # Số frames để bỏ qua (giúp camera ổn định)
+                temp_path               # Đường dẫn file đầu ra
+            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=15)  # Tăng timeout lên 15 giây
             
             # Kiểm tra file có được tạo thành công
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                logger.info(f"Đã chụp ảnh thành công: {output_path}")
-                return output_path
+            if not os.path.exists(temp_path):
+                logger.error("Lỗi chụp ảnh - file không được tạo")
+                return None
                 
-            # Nếu không thành công với MJPG, thử với YUYV
-            if os.path.exists(output_path) and os.path.getsize(output_path) == 0:
-                logger.warning("Thất bại với MJPG, thử lại với YUYV...")
-                command[10] = 'YUYV'  # Thay đổi định dạng
-                command[2] = '320x240'  # Giảm độ phân giải cho YUYV
+            if os.path.getsize(temp_path) < 1000:  # Kiểm tra kích thước tối thiểu
+                logger.error("Lỗi chụp ảnh - file quá nhỏ, có thể bị lỗi")
+                os.remove(temp_path)
+                return None
                 
-                subprocess.run(command, stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=10)
-                
-                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                    logger.info(f"Đã chụp ảnh thành công với YUYV: {output_path}")
-                    return output_path
-                    
-            logger.error("Lỗi chụp ảnh - file không được tạo hoặc kích thước bằng 0")
-            return None
-                    
-        except subprocess.TimeoutExpired:
-            logger.error(f"Lệnh fswebcam hết thời gian chờ sau 10 giây. Thử với cài đặt đơn giản hơn...")
+            # Di chuyển file từ thư mục tạm đến thư mục đích
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            import shutil
+            shutil.copy(temp_path, output_path)
+            os.remove(temp_path)
             
-            # Thử với cài đặt đơn giản nhất
-            try:
-                simple_command = [
-                    'fswebcam',
-                    '-q',                   # Chế độ im lặng
-                    '-r', '320x240',        # Độ phân giải thấp nhất
-                    '--no-banner',          # Không hiển thị banner
-                    '-d', device_path,      # Thiết bị camera
-                    output_path             # Lưu trực tiếp vào đường dẫn đích
-                ]
-                
-                subprocess.run(simple_command, stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=5)
-                
-                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                    logger.info(f"Đã chụp ảnh thành công với cài đặt đơn giản: {output_path}")
-                    return output_path
+            logger.info(f"Đã chụp ảnh: {output_path}")
+            return output_path
                     
-                return None
-                
-            except Exception as e:
-                logger.error(f"Lỗi khi chụp ảnh với cài đặt đơn giản: {e}")
-                return None
-                
         except Exception as e:
             logger.error(f"Lỗi khi chụp ảnh với fswebcam: {e}")
+            # Dọn dẹp file tạm nếu có lỗi
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
             return None
-    
+
+    def _capture_with_libcamera(self, output_path):
+        """Chụp ảnh bằng libcamera-still (cho Pi Camera)"""
+        try:
+            # Đảm bảo thư mục tồn tại
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            # Sử dụng libcamera-still để chụp ảnh (hỗ trợ Raspberry Pi mới)
+            subprocess.run([
+                'libcamera-still',
+                '-t', '1000',           # Thời gian chờ 1 giây
+                '-n',                   # Không hiển thị preview
+                '--width', '1280',      # Chiều rộng
+                '--height', '720',      # Chiều cao
+                '-o', output_path       # Đường dẫn file đầu ra
+            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=10)
+            
+            # Kiểm tra file có được tạo thành công
+            if not os.path.exists(output_path):
+                logger.error("Lỗi chụp ảnh với libcamera - file không được tạo")
+                return None
+                
+            if os.path.getsize(output_path) < 1000:  # Kiểm tra kích thước tối thiểu
+                logger.error("Lỗi chụp ảnh với libcamera - file quá nhỏ, có thể bị lỗi")
+                os.remove(output_path)
+                return None
+                
+            logger.info(f"Đã chụp ảnh với libcamera: {output_path}")
+            return output_path
+                    
+        except FileNotFoundError:
+            logger.warning("libcamera-still không tìm thấy trên hệ thống")
+            return None
+        except Exception as e:
+            logger.error(f"Lỗi khi chụp ảnh với libcamera: {e}")
+            return None
+
+    def _capture_with_picamera(self, output_path):
+        """Chụp ảnh bằng module PiCamera"""
+        if not PICAMERA_AVAILABLE:
+            logger.warning("Không tìm thấy thư viện PiCamera")
+            return None
+            
+        try:
+            # Đảm bảo thư mục tồn tại
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            camera = PiCamera()
+            camera.resolution = (1280, 720)
+            
+            # Khởi động camera và chờ cân bằng độ sáng
+            camera.start_preview()
+            time.sleep(2)  # Chờ camera điều chỉnh độ sáng
+            
+            # Chụp ảnh
+            camera.capture(output_path)
+            camera.stop_preview()
+            camera.close()
+            
+            logger.info(f"Đã chụp ảnh với PiCamera: {output_path}")
+            return output_path
+        
+        except Exception as e:
+            logger.error(f"Lỗi khi chụp ảnh với PiCamera: {e}")
+            return None
+
     def capture_photo(self):
         """
         Chụp ảnh từ camera và lưu vào thư mục chỉ định
+        Thử nhiều phương pháp khác nhau để đảm bảo chụp được ảnh
         
         Returns:
             str: Đường dẫn đến file ảnh đã chụp, hoặc None nếu thất bại
@@ -350,11 +399,48 @@ class CameraClient:
         filename = f"photo_{string_timestamp}.jpg"
         filepath = os.path.join(PHOTO_DIR, filename)
         
-        # Chụp ảnh bằng fswebcam
-        result = self.capture_with_fswebcam(filepath)
+        # Thử các phương pháp chụp ảnh khác nhau theo thứ tự ưu tiên
         
-        return result
-    
+        # Thử với USB camera trước (fswebcam) - phương pháp đã làm việc tốt trước đó
+        logger.info("Thử chụp ảnh bằng fswebcam (USB camera)...")
+        result = self._capture_with_fswebcam(filepath)
+        if result:
+            return result
+        
+        # Nếu có PiCamera, thử dùng module PiCamera
+        if PICAMERA_AVAILABLE:
+            logger.info("Thử chụp ảnh bằng module PiCamera...")
+            result = self._capture_with_picamera(filepath)
+            if result:
+                return result
+        
+        # Thử dùng libcamera-still (cho Raspberry Pi OS mới)
+        logger.info("Thử chụp ảnh bằng libcamera-still...")
+        result = self._capture_with_libcamera(filepath)
+        if result:
+            return result
+        
+        # Nếu các phương pháp chính không thành công, thử các phương pháp dự phòng
+        logger.info("Các phương pháp chính không thành công, thử phương pháp dự phòng...")
+        
+        # Thử dùng ffmpeg
+        result = self._capture_with_ffmpeg(filepath)
+        if result:
+            return result
+        
+        # Thử dùng v4l2-grab
+        result = self._capture_with_v4l2_grab(filepath)
+        if result:
+            return result
+        
+        # Thử dùng uvccapture
+        result = self._capture_with_uvccapture(filepath)
+        if result:
+            return result
+        
+        logger.error("Không thể chụp ảnh: Đã thử tất cả phương pháp nhưng không thành công")
+        return None
+
     def get_image_as_base64(self, image_path, quality=None):
         """
         Chuyển đổi hình ảnh thành chuỗi base64 (không xử lý chất lượng)
