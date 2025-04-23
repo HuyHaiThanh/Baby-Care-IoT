@@ -80,6 +80,9 @@ def main():
     # Xử lý tham số dòng lệnh
     args = parse_arguments()
     
+    # Thời gian bắt đầu chạy hệ thống
+    start_time = time.time()
+    
     # In thông tin khởi động
     print("\n" + "=" * 60)
     print("HỆ THỐNG GIÁM SÁT TRẺ EM - Raspberry Pi Client")
@@ -134,9 +137,8 @@ def main():
     print("-" * 60)
     print("\nHệ thống đang chạy. Nhấn Ctrl+C để dừng.\n")
     
-    # Thêm biến đếm cho việc gửi nhận dữ liệu
-    audio_sent_count = 0
-    photo_sent_count = 0
+    # Khoảng thời gian cập nhật thông tin (giây)
+    update_interval = 0.5  # Cập nhật mỗi 0.5 giây để nhanh hơn
     
     # Vòng lặp chính hiển thị trạng thái hệ thống
     try:
@@ -144,16 +146,24 @@ def main():
             # Xóa màn hình để cập nhật thông tin mới (chỉ trong chế độ không phải debug)
             if not args.debug and os.name == 'posix':  # Chỉ trên hệ điều hành giống Unix
                 os.system('clear')
-                print("\n" + "=" * 60)
-                print("HỆ THỐNG GIÁM SÁT TRẺ EM - Raspberry Pi Client")
-                print("=" * 60)
+            elif not args.debug and os.name == 'nt':  # Trên Windows
+                os.system('cls')
+                
+            # Tính thời gian chạy
+            runtime = time.time() - start_time
+            hours, remainder = divmod(int(runtime), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            runtime_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            
+            print("\n" + "=" * 60)
+            print(f"HỆ THỐNG GIÁM SÁT TRẺ EM - Raspberry Pi Client - Thời gian: {runtime_str}")
+            print("=" * 60)
             
             # In thông tin trạng thái kết nối và hoạt động
             current_time = time.strftime("%H:%M:%S", time.localtime())
             print(f"\n[{current_time}] Trạng thái hệ thống:")
             
             # Hiển thị thông tin IP server
-            from config import AUDIO_SERVER_HOST, AUDIO_SERVER_PORT, IMAGE_SERVER_HOST, IMAGE_SERVER_PORT
             print(f"• Server âm thanh: {AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT}")
             print(f"• Server hình ảnh: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
             
@@ -182,23 +192,19 @@ def main():
             
             # Cập nhật và hiển thị thông tin về hình ảnh
             if camera_client:
-                # Tính thời gian đến lần chụp tiếp theo
-                time_to_next = max(0, camera_client.next_photo_time - time.time())
-                
                 # Định dạng thời gian với 1 chữ số thập phân
                 capture_time = f"{camera_client.capture_duration:.1f}s"
                 sending_time = f"{camera_client.sending_duration:.1f}s"
-                next_in = f"{time_to_next:.1f}s"
                 
-                print(f"• Hình ảnh: Chụp ảnh mỗi {args.photo_interval}s | Ảnh tiếp theo sau {next_in}")
+                print(f"• Hình ảnh: Chụp ảnh mỗi {args.photo_interval}s")
                 print(f"  - File hiện tại: {camera_client.current_photo_file}")
                 print(f"  - Trạng thái: {camera_client.processing_status}")
                 print(f"  - Thời gian chụp: {capture_time} | Thời gian gửi: {sending_time}")
                 print(f"  - Đã chụp: {camera_client.total_photos_taken} ảnh")
                 print(f"  - Đã gửi thành công: {camera_client.sent_success_count} ảnh")
             
-            # Update status every 5 seconds
-            time.sleep(5)
+            # Cập nhật nhanh hơn
+            time.sleep(update_interval)
             
     except KeyboardInterrupt:
         logger.info("Đã nhận tín hiệu dừng từ người dùng")
