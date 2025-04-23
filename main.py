@@ -147,7 +147,7 @@ def main():
     # Update interval
     update_interval = 1.0
     
-    # Function to get status information
+    # Function to get status information with improved connection display
     def get_status_display():
         runtime = time.time() - start_time
         hours, remainder = divmod(int(runtime), 3600)
@@ -159,31 +159,26 @@ def main():
         status_lines.append("=" * 60)
         status_lines.append(f"BABY MONITORING SYSTEM - Runtime: {runtime_str}")
         status_lines.append("=" * 60)
-        status_lines.append(f"[{current_time}] Status: Audio:{AUDIO_SERVER_HOST} | Image:{IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
         
-        # WebSocket information
-        ws_line = "• WebSocket: "
-        if audio_client:
-            audio_ws = "✓" if audio_client.ws_connected else "✗"
-            ws_line += f"Audio[{audio_ws}] "
-        if camera_client:
-            camera_ws = "✓" if camera_client.ws_connected else "✗" 
-            ws_line += f"Image[{camera_ws}]"
-        status_lines.append(ws_line)
+        # Connection status lines - one per server
+        audio_ws_status = "Connected" if audio_client and audio_client.ws_connected else "Connecting..."
+        status_lines.append(f"• Audio Server: {AUDIO_SERVER_HOST} | Status: {audio_ws_status}")
+        
+        image_ws_status = "Connected" if camera_client and camera_client.ws_connected else "Connecting..."
+        status_lines.append(f"• Image Server: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT} | Status: {image_ws_status}")
         
         # Audio information
         if audio_client:
+            # Improve status display - show recording instead of connection issue
             audio_status = "Recording" if audio_client.is_recording else "Paused"
-            current_file = f"audio_chunk_{audio_client.save_counter}"
-            status_lines.append(f"• Audio: {audio_status}")
-            status_lines.append(f"  - File: {current_file}")
-            status_lines.append(f"  - Status: {audio_client.last_ws_status}")
+            audio_process_status = f"Processing (Chunk: audio_chunk_{audio_client.save_counter})"
+            
+            status_lines.append(f"• Audio: {audio_status} | Status: {audio_process_status}")
             status_lines.append(f"  - Process time: ~{audio_client.window_size*0.8:.1f}s | Send time: ~{audio_client.window_size/10:.1f}s")
-            status_lines.append(f"  - Processed: {audio_client.save_counter} samples")
             
             # Queue information
             queue_size = audio_client.chunk_queue.qsize() if hasattr(audio_client.chunk_queue, 'qsize') else 0
-            status_lines.append(f"  - Sent: {audio_client.save_counter} | Queue: {queue_size} chunks")
+            status_lines.append(f"  - Processed: {audio_client.save_counter} | Sent: {audio_client.save_counter} | Queue: {queue_size}")
             status_lines.append(f"  - Window: {audio_client.window_size}s | Slide: {audio_client.slide_size}s | {audio_client.sample_rate} Hz, {audio_client.channels}ch")
         
         # Camera information
@@ -191,79 +186,50 @@ def main():
             capture_time = f"{camera_client.capture_duration:.1f}s"
             sending_time = f"{camera_client.sending_duration:.1f}s"
             
-            status_lines.append(f"• Images: Every {args.photo_interval}s")
-            status_lines.append(f"  - File: {camera_client.current_photo_file}")
-            status_lines.append(f"  - Status: {camera_client.processing_status}")
+            status_lines.append(f"• Images: Every {args.photo_interval}s | File: {camera_client.current_photo_file}")
+            status_lines.append(f"  - Status: {camera_client.processing_status} | Resolution: 640x480px")
             status_lines.append(f"  - Capture: {capture_time} | Send: {sending_time}")
-            status_lines.append(f"  - Resolution: 640x480px")
             status_lines.append(f"  - Captured: {camera_client.total_photos_taken} | Sent: {camera_client.sent_success_count} | Queue: {camera_client.sent_fail_count}")
         
         return status_lines
     
     # ANSI escape codes
     CLEAR_SCREEN = "\033[2J\033[1;1H"  # Clear entire screen and move cursor to top-left
-    CLEAR_LINE = "\033[2K\033[G"       # Clear current line and move cursor to beginning of line
+    SAVE_CURSOR = "\033[s"              # Save cursor position
+    RESTORE_CURSOR = "\033[u"           # Restore cursor position
+    CLEAR_LINE = "\033[2K\033[G"        # Clear current line and move cursor to beginning of line
     
-    # Try to detect whether the terminal supports ANSI escape codes
-    # Not 100% reliable, but for Raspberry Pi's terminal it should work
-    ansi_supported = sys.stdout.isatty()
+    # Detect if this is running in a TTY that likely supports ANSI
+    is_tty = sys.stdout.isatty()
     
+    # Use a single display mode that prevents scrolling and history buildup
     try:
-        # Use different display modes based on terminal capability and debug mode
-        if args.debug:
-            # Debug mode - show single line status updates
-            print("Running in debug mode with simplified status updates.")
+        # Clear screen once at the beginning
+        if is_tty:
+            print(CLEAR_SCREEN, end='', flush=True)
+        
+        # Main display loop
+        while running:
+            status_lines = get_status_display()
             
-            # Print full status once initially
-            print("\n".join(get_status_display()))
-            print("\nContinuous status updates (press Ctrl+C to stop):")
-            
-            while running:
-                time.sleep(update_interval)
-                runtime = time.time() - start_time
-                mins, secs = divmod(int(runtime), 60)
-                audio_count = audio_client.save_counter if audio_client else 'N/A'
-                camera_count = camera_client.total_photos_taken if camera_client else 'N/A'
-                
-                # Use ANSI escape codes if terminal likely supports them
-                if ansi_supported:
-                    print(f"{CLEAR_LINE}[{mins:02d}:{secs:02d}] Audio processed: {audio_count} chunks | Images captured: {camera_count}", end='\r')
-                else:
-                    print(f"[{mins:02d}:{secs:02d}] Audio: {audio_count} | Images: {camera_count}")
-                    
-                # Print a full update every 10 seconds in debug mode
-                if secs % 10 == 0:
-                    print("\n" + "-" * 40)
-                    print("Detailed status update:")
-                    print("\n".join(get_status_display()))
-                    print("-" * 40)
-        else:
-            # Normal mode - try to use ANSI escape codes for a clean display
-            if ansi_supported:
-                while running:
-                    # Clear screen and print updated status
-                    print(CLEAR_SCREEN, end='')
-                    print("\n".join(get_status_display()))
-                    time.sleep(update_interval)
+            if is_tty:
+                # Move to top of screen and print status
+                print(CLEAR_SCREEN, end='', flush=True)
+                print("\n".join(status_lines), flush=True)
             else:
-                # Fallback for terminals without ANSI support
-                print("\nRunning in static display mode (non-ANSI terminal).")
-                print("Status information will be updated periodically but may scroll.")
+                # For non-TTY environments (like redirected output), add a separator
+                print("\n" + "=" * 30 + " STATUS UPDATE " + "=" * 30)
+                print("\n".join(status_lines))
+            
+            # Wait for next update
+            time.sleep(update_interval)
                 
-                count = 0
-                while running:
-                    # Only print status every few seconds to reduce scrolling
-                    count += 1
-                    if count % 5 == 0:  # Every 5 seconds
-                        print("\n" + "=" * 30 + " STATUS UPDATE " + "=" * 30)
-                        print("\n".join(get_status_display()))
-                    time.sleep(update_interval)
-                    
     except KeyboardInterrupt:
+        print("\n")  # Add a newline after ^C
         logger.info("Stop signal received from user")
     
     # Cleanup on exit
-    print("\n\nStopping system...")
+    print("Stopping system...")
     
     if audio_client:
         print(">> Stopping audio module...")
