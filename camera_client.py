@@ -118,26 +118,8 @@ class CameraClient:
         """
         def on_message(ws, message):
             try:
-                data = json.loads(message)
-                msg_type = data.get('type')
-                
-                if msg_type == 'request':
-                    # Server yêu cầu hình ảnh mới
-                    logger.info("Nhận yêu cầu chụp ảnh từ server")
-                    
-                    # Chụp ảnh mới và gửi qua WebSocket
-                    threading.Thread(target=self.capture_and_send_photo).start()
-                    
-                elif msg_type == 'error':
-                    # Thông báo lỗi
-                    msg = data.get('message', '')
-                    details = data.get('details', '')
-                    logger.error(f"Lỗi từ server hình ảnh: {msg}")
-                    if details:
-                        logger.error(f"Chi tiết: {details}")
-            
-            except json.JSONDecodeError:
-                logger.error(f"Không thể giải mã thông điệp WebSocket: {message}")
+                # Xử lý message từ server (nếu cần)
+                logger.info(f"Nhận tin nhắn từ server: {message}")
             except Exception as e:
                 logger.error(f"Lỗi khi xử lý thông điệp WebSocket: {e}")
 
@@ -157,14 +139,12 @@ class CameraClient:
 
         def on_open(ws):
             logger.info("Đã kết nối WebSocket tới server xử lý hình ảnh")
-            self.ws_connected = True
             
-            # Gửi thông tin thiết bị
-            self.ws.send(json.dumps({
-                'type': 'connect',
-                'client_id': DEVICE_ID,
-                'timestamp': time.time()
-            }))
+            # Gửi device_id như tin nhắn đầu tiên (plain text)
+            self.ws.send(DEVICE_ID)
+            logger.info(f"Đã gửi ID thiết bị {DEVICE_ID} tới server")
+            
+            self.ws_connected = True
         
         # Khởi tạo và kết nối WebSocket
         def _connect_websocket():
@@ -172,24 +152,16 @@ class CameraClient:
                 if hasattr(self, 'ws') and self.ws:
                     self.ws.close()
                     
-                # Thêm token xác thực vào URL WebSocket
-                auth_token = f"?token={DEVICE_ID}"
-                websocket_url = f"{IMAGE_WS_ENDPOINT}/{DEVICE_ID}{auth_token}"
+                # Kết nối tới WebSocket endpoint
+                websocket_url = IMAGE_WS_ENDPOINT
                 logger.info(f"Đang kết nối tới {websocket_url}")
-                
-                # Thêm header xác thực
-                headers = {
-                    "Authorization": f"Bearer {DEVICE_ID}",
-                    "X-Device-ID": DEVICE_ID
-                }
                 
                 self.ws = websocket.WebSocketApp(
                     websocket_url,
                     on_open=on_open,
                     on_message=on_message,
                     on_error=on_error,
-                    on_close=on_close,
-                    header=headers
+                    on_close=on_close
                 )
                 self.ws.run_forever()
             except Exception as e:
@@ -358,7 +330,7 @@ class CameraClient:
     
     def send_image_via_websocket(self, image_path, timestamp, quality="high"):
         """
-        Gửi hình ảnh qua WebSocket theo định dạng đơn giản hóa
+        Gửi hình ảnh qua WebSocket theo định dạng server yêu cầu
         
         Args:
             image_path (str): Đường dẫn đến file hình ảnh
@@ -373,21 +345,23 @@ class CameraClient:
             return False
         
         try:
-            # Chuyển đổi hình ảnh thành base64 (mặc định chất lượng "high")
+            # Chuyển đổi hình ảnh thành base64
             image_base64 = self.get_image_as_base64(image_path, quality)
             if not image_base64:
                 return False
                 
-            # Tạo message với cấu trúc đơn giản hóa (không gửi device_id và quality)
+            # Tạo timestamp theo định dạng ISO 8601 cho phù hợp với server
+            timestamp_str = datetime.datetime.fromtimestamp(timestamp).isoformat()
+                
+            # Tạo message theo định dạng server yêu cầu
             message = {
-                'type': 'image',
-                'timestamp': timestamp,
-                'image_data': image_base64
+                'image_base64': image_base64,
+                'timestamp': timestamp_str
             }
             
             # Gửi qua WebSocket
             self.ws.send(json.dumps(message))
-            logger.info(f"Đã gửi hình ảnh qua WebSocket lúc {timestamp}")
+            logger.info(f"Đã gửi hình ảnh qua WebSocket lúc {timestamp_str}")
             return True
             
         except Exception as e:
@@ -480,7 +454,7 @@ class CameraClient:
         self.total_photos_taken += 1
             
         # Gửi hình ảnh đến server
-        _, timestamp = get_timestamp()
+        timestamp = time.time()
         success = False
         
         # Cập nhật trạng thái và bắt đầu đo thời gian gửi
