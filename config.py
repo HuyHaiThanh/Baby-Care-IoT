@@ -28,7 +28,7 @@ DEFAULT_CONNECTION_CONFIG = {
     },
     "audio_server": {
         "use_ngrok": True,
-        "local_host": "localhost",
+        "local_host": "192.168.5.51",
         "local_port": 8000,
         "ngrok_url": "759e-42-112-80-76.ngrok-free.app",
         "use_ssl": True
