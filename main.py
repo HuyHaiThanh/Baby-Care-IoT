@@ -61,10 +61,29 @@ def parse_arguments():
     """Process command line arguments"""
     parser = argparse.ArgumentParser(description='Raspberry Pi client for baby monitoring system')
     
+    # Các tùy chọn hiện có
     parser.add_argument('--no-audio', action='store_true', help='Disable audio recording')
     parser.add_argument('--no-camera', action='store_true', help='Disable camera')
-    parser.add_argument('--photo-interval', type=int, default=1, help='Interval between photos (seconds)')  # Changed default to 1 second
+    parser.add_argument('--photo-interval', type=int, default=1, help='Interval between photos (seconds)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    
+    # Thêm tùy chọn mode đơn giản
+    parser.add_argument('--mode', choices=['local', 'ngrok'], default='local',
+                        help='Connection mode: "local" to use IP addresses, "ngrok" to use ngrok URLs (default: local)')
+    
+    # Các tùy chọn cấu hình kết nối chi tiết (ẩn khỏi help để không gây nhầm lẫn)
+    connection_group = parser.add_argument_group('Advanced Connection Configuration')
+    connection_group.add_argument('--image-use-ngrok', action='store_true', help=argparse.SUPPRESS)
+    connection_group.add_argument('--image-use-local', action='store_false', dest='image_use_ngrok', help=argparse.SUPPRESS)
+    connection_group.add_argument('--image-host', help='Image server host (IP address or hostname, for local mode)')
+    connection_group.add_argument('--image-port', type=int, help='Image server port (for local mode)')
+    connection_group.add_argument('--image-ngrok', help='Image server ngrok URL (without http/https, for ngrok mode)')
+    
+    connection_group.add_argument('--audio-use-ngrok', action='store_true', help=argparse.SUPPRESS)
+    connection_group.add_argument('--audio-use-local', action='store_false', dest='audio_use_ngrok', help=argparse.SUPPRESS)
+    connection_group.add_argument('--audio-host', help='Audio server host (IP address or hostname, for local mode)')
+    connection_group.add_argument('--audio-port', type=int, help='Audio server port (for local mode)')
+    connection_group.add_argument('--audio-ngrok', help='Audio server ngrok URL (without http/https, for ngrok mode)')
     
     return parser.parse_args()
 
@@ -84,6 +103,115 @@ def main():
     print("\n" + "=" * 60)
     print("BABY MONITORING SYSTEM - Raspberry Pi Client")
     print("=" * 60)
+    
+    # Áp dụng cấu hình kết nối từ tham số dòng lệnh
+    try:
+        # Import các module cần thiết cho cấu hình kết nối
+        import json
+        from config import CONNECTION_CONFIG, save_connection_config
+        
+        # Xử lý tham số --mode (ưu tiên cao nhất)
+        if args.mode:
+            is_ngrok_mode = args.mode == 'ngrok'
+            
+            # Cập nhật cả hai server dựa trên chế độ
+            CONNECTION_CONFIG["image_server"]["use_ngrok"] = is_ngrok_mode
+            CONNECTION_CONFIG["audio_server"]["use_ngrok"] = is_ngrok_mode
+            
+            print(f"\n>> Đang chuyển sang chế độ kết nối: {args.mode.upper()}")
+            
+        # Các tham số chi tiết có thể ghi đè lên chế độ nếu được chỉ định
+        
+        # Xử lý cấu hình kết nối cho Image Server
+        if hasattr(args, 'image_use_ngrok') or args.image_host or args.image_port or args.image_ngrok:
+            image_server_config = CONNECTION_CONFIG["image_server"]
+            
+            # Cập nhật cấu hình khi người dùng chỉ định
+            if hasattr(args, 'image_use_ngrok'):
+                image_server_config["use_ngrok"] = args.image_use_ngrok
+            
+            if args.image_host:
+                image_server_config["local_host"] = args.image_host
+            
+            if args.image_port:
+                image_server_config["local_port"] = args.image_port
+                
+            if args.image_ngrok:
+                image_server_config["ngrok_url"] = args.image_ngrok
+                
+            # Cập nhật lại cấu hình
+            CONNECTION_CONFIG["image_server"] = image_server_config
+        
+        # Xử lý cấu hình kết nối cho Audio Server
+        if hasattr(args, 'audio_use_ngrok') or args.audio_host or args.audio_port or args.audio_ngrok:
+            audio_server_config = CONNECTION_CONFIG["audio_server"]
+            
+            # Cập nhật cấu hình khi người dùng chỉ định
+            if hasattr(args, 'audio_use_ngrok'):
+                audio_server_config["use_ngrok"] = args.audio_use_ngrok
+            
+            if args.audio_host:
+                audio_server_config["local_host"] = args.audio_host
+            
+            if args.audio_port:
+                audio_server_config["local_port"] = args.audio_port
+                
+            if args.audio_ngrok:
+                audio_server_config["ngrok_url"] = args.audio_ngrok
+                
+            # Cập nhật lại cấu hình
+            CONNECTION_CONFIG["audio_server"] = audio_server_config
+        
+        # Lưu cấu hình mới vào file
+        save_connection_config(CONNECTION_CONFIG)
+        
+        # Tải lại các URL từ cấu hình mới
+        from config import get_server_url, get_ws_url
+        
+        # Cập nhật lại các biến toàn cục trong module config
+        import config
+        config.IMAGE_SERVER_URL = get_server_url("image")
+        config.AUDIO_SERVER_URL = get_server_url("audio")
+        config.IMAGE_API_ENDPOINT = f"{config.IMAGE_SERVER_URL}/api/images"
+        config.AUDIO_API_ENDPOINT = f"{config.AUDIO_SERVER_URL}/api/audio"
+        config.IMAGE_WS_ENDPOINT = get_ws_url("image")
+        config.AUDIO_WS_ENDPOINT = get_ws_url("audio")
+        
+        # Phân tích URL để lấy host và port
+        # IMAGE_SERVER_URL dạng http(s)://host:port
+        if "://" in config.IMAGE_SERVER_URL:
+            image_url_parts = config.IMAGE_SERVER_URL.split("://")[1].split(":")
+            config.IMAGE_SERVER_HOST = image_url_parts[0]
+            if len(image_url_parts) > 1:
+                config.IMAGE_SERVER_PORT = int(image_url_parts[1].split("/")[0])
+                
+        # AUDIO_SERVER_URL dạng http(s)://host:port hoặc http(s)://host (không có port)
+        if "://" in config.AUDIO_SERVER_URL:
+            audio_url_parts = config.AUDIO_SERVER_URL.split("://")[1].split(":")
+            config.AUDIO_SERVER_HOST = audio_url_parts[0]
+            if len(audio_url_parts) > 1:
+                config.AUDIO_SERVER_PORT = int(audio_url_parts[1].split("/")[0])
+            else:
+                config.AUDIO_SERVER_PORT = 443 if "https://" in config.AUDIO_SERVER_URL else 80
+        
+        print("\n>> Đã cập nhật cấu hình kết nối từ tham số dòng lệnh")
+        
+        # Hiển thị thông tin kết nối
+        for server_type in ["image", "audio"]:
+            server_config = CONNECTION_CONFIG[f"{server_type}_server"]
+            connection_type = "ngrok" if server_config["use_ngrok"] else "local IP"
+            if server_config["use_ngrok"]:
+                host_info = server_config["ngrok_url"]
+            else:
+                host_info = f"{server_config['local_host']}:{server_config['local_port']}"
+            
+            print(f"• {server_type.capitalize()} server: {connection_type} ({host_info})")
+        
+    except Exception as e:
+        print(f"\n>> Lỗi khi cập nhật cấu hình kết nối: {e}")
+        if args.debug:
+            print("Chi tiết lỗi:")
+            traceback.print_exc()
     
     # Initialize clients
     audio_client = None
