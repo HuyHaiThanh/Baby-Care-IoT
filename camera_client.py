@@ -402,51 +402,45 @@ class CameraClient:
     def capture_with_ffmpeg(self, output_path):
         """Chụp ảnh bằng ffmpeg (nhanh và hiệu quả)"""
         try:
-            # Đảm bảo thư mục tồn tại
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            # Tìm đường dẫn thiết bị webcam nhanh nhất có thể
+            device_path = '/dev/video0'  # Mặc định trên Linux
             
-            # Kiểm tra camera tồn tại
-            devices = self.detect_video_devices()
-            device_path = None
-            
-            if devices:
-                device_path = devices[0]['device']
-                logger.info(f"Đã phát hiện camera: {device_path}")
+            # Với Windows, sử dụng thiết bị dshow
+            if os.name == 'nt':
+                # Sử dụng DirectShow trên Windows
+                result = subprocess.run([
+                    'ffmpeg',
+                    '-y',                       # Ghi đè file nếu có
+                    '-f', 'dshow',              # Format DirectShow cho Windows
+                    '-video_size', '640x360',   # Độ phân giải rất thấp để tăng tốc
+                    '-framerate', '30',         # Framerate cao để lấy frame nhanh
+                    '-i', 'video=Webcam',      # Tên thiết bị webcam thông thường
+                    '-vframes', '1',            # Chỉ lấy 1 frame
+                    '-q:v', '10',               # Chất lượng thấp (10-31)
+                    '-loglevel', 'quiet',       # Không hiển thị thông tin
+                    output_path
+                ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=2)
             else:
-                # Kiểm tra camera mặc định
-                if os.path.exists('/dev/video0'):
-                    device_path = '/dev/video0'
-                    logger.info("Sử dụng camera mặc định /dev/video0")
+                # Với Linux, sử dụng v4l2
+                result = subprocess.run([
+                    'ffmpeg',
+                    '-y',                       # Ghi đè file nếu có
+                    '-f', 'v4l2',               # Format v4l2 cho Linux
+                    '-input_format', 'mjpeg',   # Định dạng đầu vào MJPEG (nhanh hơn)
+                    '-video_size', '640x360',   # Độ phân giải rất thấp
+                    '-i', device_path,          # Thiết bị camera
+                    '-vframes', '1',            # Chỉ lấy 1 frame
+                    '-q:v', '10',               # Chất lượng thấp để tăng tốc
+                    '-loglevel', 'quiet',       # Không hiển thị thông tin
+                    output_path
+                ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=2)
             
-            if not device_path:
-                logger.error("Không tìm thấy thiết bị camera")
-                return None
-                
-            # Sử dụng ffmpeg để chụp nhanh một frame với độ phân giải thấp hơn
-            result = subprocess.run([
-                'ffmpeg',
-                '-y',
-                '-f', 'v4l2',
-                '-input_format', 'mjpeg',
-                '-video_size', '640x480',  # Giảm độ phân giải
-                '-i', device_path,
-                '-vframes', '1',
-                '-q:v', '5',  # Chất lượng thấp hơn để nhanh hơn
-                output_path
-            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=5)  # Thêm timeout để tránh bị treo
-            
-            # Kiểm tra file có được tạo thành công
+            # Kiểm tra file đã được tạo thành công
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                logger.info(f"Đã chụp ảnh với ffmpeg: {output_path}")
                 return output_path
             else:
-                stderr = result.stderr.decode()
-                logger.error(f"Lỗi chụp ảnh với ffmpeg: {stderr}")
                 return None
                     
-        except subprocess.TimeoutExpired:
-            logger.error(f"Quá thời gian chụp ảnh với ffmpeg")
-            return None
         except Exception as e:
             logger.error(f"Lỗi khi chụp ảnh với ffmpeg: {e}")
             return None
@@ -466,85 +460,32 @@ class CameraClient:
         filename = f"photo_{string_timestamp}.jpg"
         filepath = os.path.join(PHOTO_DIR, filename)
         
-        # Đầu tiên thử dùng ffmpeg vì nhanh và hiệu quả nhất
-        logger.info("Đang thử chụp ảnh bằng ffmpeg với độ phân giải thấp...")
+        # Sử dụng ffmpeg để chụp ảnh nhanh
         result = self.capture_with_ffmpeg(filepath)
         if result:
             return result
             
-        # Nếu không có ffmpeg hoặc ffmpeg thất bại, thử với fswebcam
-        logger.info("ffmpeg thất bại, đang thử chụp ảnh bằng fswebcam...")
-        result = self.capture_with_fswebcam(filepath)
-        if result:
-            return result
-            
-        # Nếu không có USB camera, thử dùng PiCamera
-        if PICAMERA_AVAILABLE:
-            logger.info("Đang thử chụp ảnh bằng PiCamera...")
-            result = self.capture_with_picamera(filepath)
-            if result:
-                return result
-        
-        # Thử dùng libcamera-still (cho Raspberry Pi OS mới)
-        logger.info("Đang thử chụp ảnh bằng libcamera-still...")
-        result = self.capture_with_libcamera(filepath)
-        if result:
-            return result
-            
-        logger.error("Không thể chụp ảnh: Đã thử tất cả các phương pháp chụp ảnh nhưng đều thất bại")
+        logger.error("Không thể chụp ảnh: ffmpeg thất bại")
         return None
     
     def get_image_as_base64(self, image_path, quality="high"):
         """
-        Chuyển đổi hình ảnh thành chuỗi base64 với chất lượng tùy chỉnh
+        Chuyển đổi hình ảnh thành chuỗi base64 không thay đổi kích thước
         
         Args:
             image_path (str): Đường dẫn đến file hình ảnh
-            quality (str): Chất lượng hình ảnh ("high", "medium", "low")
+            quality (str): Tham số không sử dụng (giữ cho tương thích)
             
         Returns:
             str: Chuỗi base64 của dữ liệu hình ảnh
         """
         try:
-            from PIL import Image
-            import io
-            
-            # Mở ảnh và nén theo chất lượng
-            with Image.open(image_path) as img:
-                # Điều chỉnh chất lượng và kích thước theo yêu cầu
-                if quality == "medium":
-                    # Giảm kích thước xuống 50% và nén với chất lượng 70%
-                    new_size = (img.width // 2, img.height // 2)
-                    img = img.resize(new_size, Image.Resampling.LANCZOS)
-                    compress_quality = 70
-                elif quality == "low":
-                    # Giảm kích thước xuống 30% và nén với chất lượng 50%
-                    new_size = (img.width // 3, img.height // 3)
-                    img = img.resize(new_size, Image.Resampling.LANCZOS)
-                    compress_quality = 50
-                else:
-                    # Chất lượng cao - giữ nguyên kích thước, nén nhẹ
-                    compress_quality = 85
-                
-                # Lưu ảnh vào buffer với định dạng JPEG và nén
-                buffer = io.BytesIO()
-                img.convert('RGB').save(buffer, format="JPEG", quality=compress_quality)
-                image_data = buffer.getvalue()
-                
-                # Mã hóa thành base64
-                base64_image = base64.b64encode(image_data).decode('utf-8')
-                return base64_image
-                
+            # Đọc file ảnh trực tiếp và mã hóa base64
+            with open(image_path, "rb") as image_file:
+                return base64.b64encode(image_file.read()).decode('utf-8')
         except Exception as e:
-            logger.error(f"Lỗi khi chuyển đổi hình ảnh sang base64: {e}")
-            
-            # Nếu không có PIL, đọc file trực tiếp
-            try:
-                with open(image_path, "rb") as image_file:
-                    return base64.b64encode(image_file.read()).decode('utf-8')
-            except Exception as e2:
-                logger.error(f"Lỗi khi đọc file hình ảnh: {e2}")
-                return None
+            logger.error(f"Lỗi khi đọc file hình ảnh: {e}")
+            return None
     
     def send_image_via_websocket(self, image_path, timestamp, quality="high"):
         """
