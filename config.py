@@ -32,7 +32,7 @@ IMAGE_WS_ENDPOINT = f"ws://{IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}/ws"
 AUDIO_WS_ENDPOINT = f"ws://{AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT}/ws"
 
 # Thông số thu thập dữ liệu
-PHOTO_INTERVAL = 5  # Khoảng thời gian chụp ảnh (giây)
+PHOTO_INTERVAL = 1  # Khoảng thời gian chụp ảnh (giây)
 AUDIO_DURATION = 3  # Độ dài của mỗi đoạn ghi âm (giây)
 AUDIO_SLIDE_SIZE = 1  # Độ dịch chuyển cửa sổ ghi âm (giây)
 SAMPLE_RATE = 16000  # Tần số lấy mẫu âm thanh (Hz)
