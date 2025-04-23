@@ -190,17 +190,27 @@ def main():
             capture_time = f"{camera_client.capture_duration:.1f}s"
             sending_time = f"{camera_client.sending_duration:.1f}s"
             
-            # Đảm bảo trạng thái camera hiển thị chính xác
-            camera_status = str(camera_client.processing_status).strip()
-            # Nếu trạng thái camera có vẻ bị ghép lại (có thể xảy ra trong trường hợp cập nhật cùng lúc)
-            if "error" in camera_status.lower() and "image" in camera_status.lower():
-                if "Send error" in camera_status:
-                    camera_status = "Send error"
-                elif "Capturing image" in camera_status:
-                    camera_status = "Capturing image..."
-                else:
-                    # Trường hợp không xác định, hiển thị trạng thái gốc
-                    camera_status = "Processing"
+            # Fix trạng thái hiển thị - Cách hoàn toàn mới để ngăn lỗi ghép trạng thái
+            # Thay vì dựa vào camera_client.processing_status có thể bị lỗi
+            # chúng ta sẽ xác định trạng thái theo thời gian
+            current_time = time.time()
+            time_since_capture = current_time - camera_client.last_capture_time
+            time_since_sent = current_time - camera_client.last_sent_time if camera_client.last_sent_time > 0 else 999
+            
+            # Xác định trạng thái dựa trên thời gian
+            camera_status = "Waiting"
+            if time_since_capture < 1.0:
+                # Nếu vừa chụp ảnh trong vòng 1 giây
+                camera_status = "Capturing image..."
+            elif time_since_sent < 1.0:
+                # Nếu vừa gửi ảnh trong vòng 1 giây
+                camera_status = "Sending image..."
+            elif camera_client.sent_fail_count > 0:
+                # Nếu có ảnh bị lỗi khi gửi
+                camera_status = "Send error"
+            elif camera_client.sent_success_count > 0:
+                # Nếu gửi thành công
+                camera_status = "Sent successfully"
             
             status_lines.append(f"• Images: Every {args.photo_interval}s")
             status_lines.append(f"  - Status: {camera_status}")
