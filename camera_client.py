@@ -9,6 +9,7 @@ import subprocess
 import re
 import base64
 import json
+import queue  # Thêm import queue ở đây
 from io import BytesIO
 from config import (
     PHOTO_DIR, TEMP_DIR, DEVICE_ID, IMAGE_WS_ENDPOINT, 
