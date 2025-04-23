@@ -138,43 +138,41 @@ def main():
     print("\nHệ thống đang chạy. Nhấn Ctrl+C để dừng.\n")
     
     # Khoảng thời gian cập nhật thông tin (giây)
-    update_interval = 0.5  # Cập nhật mỗi 1 giây 
+    # Tăng khoảng thời gian làm mới lên để giảm hiện tượng giật
+    update_interval = 1.0  # Cập nhật mỗi 1 giây thay vì 0.5 giây
+    
+    # Lưu trữ nội dung hiển thị trước đó để tránh việc xóa và in lại màn hình quá thường xuyên
+    last_display = ""
     
     # Vòng lặp chính hiển thị trạng thái hệ thống
     try:
         while running:
-            # Xóa màn hình để cập nhật thông tin mới (chỉ trong chế độ không phải debug)
-            if not args.debug and os.name == 'posix':  # Chỉ trên hệ điều hành giống Unix
-                os.system('clear')
-            elif not args.debug and os.name == 'nt':  # Trên Windows
-                os.system('cls')
-                
             # Tính thời gian chạy
             runtime = time.time() - start_time
             hours, remainder = divmod(int(runtime), 3600)
             minutes, seconds = divmod(remainder, 60)
             runtime_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
             
-            print("\n" + "=" * 60)
-            print(f"HỆ THỐNG GIÁM SÁT TRẺ EM - Raspberry Pi Client - Thời gian: {runtime_str}")
-            print("=" * 60)
-            
-            # In thông tin trạng thái kết nối và hoạt động
+            # Tạo nội dung hiển thị mới
             current_time = time.strftime("%H:%M:%S", time.localtime())
-            print(f"\n[{current_time}] Trạng thái hệ thống:")
             
-            # Hiển thị thông tin IP server
-            print(f"• Server âm thanh: {AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT}")
-            print(f"• Server hình ảnh: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
+            # Tạo nội dung để hiển thị
+            display = []
+            display.append("\n" + "=" * 60)
+            display.append(f"HỆ THỐNG GIÁM SÁT TRẺ EM - Raspberry Pi Client - Thời gian: {runtime_str}")
+            display.append("=" * 60)
+            display.append(f"\n[{current_time}] Trạng thái hệ thống:")
+            display.append(f"• Server âm thanh: {AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT}")
+            display.append(f"• Server hình ảnh: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
             
-            # Trạng thái kết nối
+            # Thêm thông tin về WebSocket nếu được sử dụng
             if not args.no_websocket:
                 audio_ws_status = "Đã kết nối" if (audio_client and audio_client.ws_connected) else "Đang kết nối..."
                 camera_ws_status = "Đã kết nối" if (camera_client and camera_client.ws_connected) else "Đang kết nối..."
-                print(f"• WebSocket âm thanh: {audio_ws_status}")
-                print(f"• WebSocket hình ảnh: {camera_ws_status}")
+                display.append(f"• WebSocket âm thanh: {audio_ws_status}")
+                display.append(f"• WebSocket hình ảnh: {camera_ws_status}")
             
-            # Cập nhật và hiển thị thông tin về âm thanh
+            # Thêm thông tin về âm thanh nếu module âm thanh đang chạy
             if audio_client:
                 audio_status = "Đang ghi âm" if audio_client.is_recording else "Tạm dừng"
                 vad_status = "Bật" if audio_client.use_vad_filter else "Tắt"
@@ -183,27 +181,46 @@ def main():
                 proc_time = f"{audio_client.processing_duration:.1f}s"
                 proc_interval = f"{audio_client.processing_interval:.1f}s"
                 
-                print(f"• Âm thanh: {audio_status} | VAD: {vad_status}")
-                print(f"  - File hiện tại: {audio_client.current_audio_file}")
-                print(f"  - Trạng thái: {audio_client.processing_status}")
-                print(f"  - Thời gian xử lý: {proc_time} | Khoảng cách: {proc_interval}")
-                print(f"  - Đã xử lý: {audio_client.total_audio_processed} mẫu")
-                print(f"  - Đã gửi thành công: {audio_client.sent_success_count} mẫu")
+                display.append(f"• Âm thanh: {audio_status} | VAD: {vad_status}")
+                display.append(f"  - File hiện tại: {audio_client.current_audio_file}")
+                display.append(f"  - Trạng thái: {audio_client.processing_status}")
+                display.append(f"  - Thời gian xử lý: {proc_time} | Khoảng cách: {proc_interval}")
+                display.append(f"  - Đã xử lý: {audio_client.total_audio_processed} mẫu")
+                display.append(f"  - Đã gửi thành công: {audio_client.sent_success_count} mẫu")
             
-            # Cập nhật và hiển thị thông tin về hình ảnh
+            # Thêm thông tin về hình ảnh nếu module camera đang chạy
             if camera_client:
                 # Định dạng thời gian với 1 chữ số thập phân
                 capture_time = f"{camera_client.capture_duration:.1f}s"
                 sending_time = f"{camera_client.sending_duration:.1f}s"
                 
-                print(f"• Hình ảnh: Chụp ảnh mỗi {args.photo_interval}s")
-                print(f"  - File hiện tại: {camera_client.current_photo_file}")
-                print(f"  - Trạng thái: {camera_client.processing_status}")
-                print(f"  - Thời gian chụp: {capture_time} | Thời gian gửi: {sending_time}")
-                print(f"  - Đã chụp: {camera_client.total_photos_taken} ảnh")
-                print(f"  - Đã gửi thành công: {camera_client.sent_success_count} ảnh")
+                display.append(f"• Hình ảnh: Chụp ảnh mỗi {args.photo_interval}s")
+                display.append(f"  - File hiện tại: {camera_client.current_photo_file}")
+                display.append(f"  - Trạng thái: {camera_client.processing_status}")
+                display.append(f"  - Thời gian chụp: {capture_time} | Thời gian gửi: {sending_time}")
+                display.append(f"  - Đã chụp: {camera_client.total_photos_taken} ảnh")
+                display.append(f"  - Đã gửi thành công: {camera_client.sent_success_count} ảnh")
             
-            # Cập nhật nhanh hơn
+            # Kết hợp thành một chuỗi để hiển thị
+            current_display = "\n".join(display)
+            
+            # Chỉ xóa và cập nhật màn hình khi nội dung thay đổi
+            if current_display != last_display:
+                # Xóa màn hình chỉ khi cần thiết và không ở chế độ debug
+                if not args.debug:
+                    if os.name == 'posix':  # Linux/Mac
+                        os.system('clear')
+                    elif os.name == 'nt':   # Windows
+                        # Sử dụng lệnh cls thông qua cmd.exe để tránh lỗi trên PowerShell
+                        os.system('cmd /c cls')
+                
+                # In nội dung mới
+                print(current_display)
+                
+                # Cập nhật nội dung đã hiển thị
+                last_display = current_display
+            
+            # Ngủ trong khoảng thời gian update_interval
             time.sleep(update_interval)
             
     except KeyboardInterrupt:
