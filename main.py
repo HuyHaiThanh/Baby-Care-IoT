@@ -46,7 +46,7 @@ except ImportError:
 # Khôi phục stderr cho các thư viện không liên quan đến âm thanh
 # os.dup2(old_stderr, 2)  # Bỏ comment nếu bạn muốn xem tất cả lỗi
 
-from audio_client import AudioClient
+from audio_client import AudioRecorder  # Import AudioRecorder thay vì AudioClient
 from camera_client import CameraClient
 from utils import logger
 
@@ -93,17 +93,15 @@ def main():
     audio_client = None
     camera_client = None
     
-    # Khởi động AudioClient nếu không bị tắt qua tham số
+    # Khởi động AudioRecorder nếu không bị tắt qua tham số
     if not args.no_audio:
         print("\n>> Khởi động module xử lý âm thanh...")
-        audio_client = AudioClient(
-            use_websocket=not args.no_websocket,
-            use_vad_filter=not args.no_vad
-        )
-        if audio_client.start():
+        try:
+            audio_client = AudioRecorder()
+            audio_client.start_recording()
             print("✓ Module âm thanh đã khởi động thành công")
-        else:
-            print("✗ Không thể khởi động module âm thanh")
+        except Exception as e:
+            print(f"✗ Không thể khởi động module âm thanh: {e}")
             audio_client = None
     
     # Khởi động CameraClient nếu không bị tắt qua tham số
@@ -166,31 +164,29 @@ def main():
             display.append(f"HỆ THỐNG GIÁM SÁT TRẺ EM - Raspberry Pi Client - Thời gian: {runtime_str}")
             display.append("=" * 60)
             display.append(f"\n[{current_time}] Trạng thái hệ thống:")
-            display.append(f"• Server âm thanh: {AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT}")
+            display.append(f"• Server âm thanh: {AUDIO_SERVER_HOST}")
             display.append(f"• Server hình ảnh: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
             
-            # Thêm thông tin về WebSocket nếu được sử dụng
-            if not args.no_websocket:
-                audio_ws_status = "Đã kết nối" if (audio_client and audio_client.ws_connected) else "Đang kết nối..."
-                camera_ws_status = "Đã kết nối" if (camera_client and camera_client.ws_connected) else "Đang kết nối..."
-                display.append(f"• WebSocket âm thanh: {audio_ws_status}")
+            # Thêm thông tin về WebSocket
+            if audio_client:
+                audio_ws_status = "Đã kết nối" if audio_client.ws_connected else "Đang kết nối..."
+                display.append(f"• WebSocket âm thanh: {audio_ws_status} | Trạng thái: {audio_client.last_ws_status}")
+            
+            if not args.no_websocket and camera_client:
+                camera_ws_status = "Đã kết nối" if camera_client.ws_connected else "Đang kết nối..."
                 display.append(f"• WebSocket hình ảnh: {camera_ws_status}")
             
             # Thêm thông tin về âm thanh nếu module âm thanh đang chạy
             if audio_client:
                 audio_status = "Đang ghi âm" if audio_client.is_recording else "Tạm dừng"
-                vad_status = "Bật" if audio_client.use_vad_filter else "Tắt"
                 
-                # Định dạng thời gian xử lý với 1 chữ số thập phân
-                proc_time = f"{audio_client.processing_duration:.1f}s"
-                proc_interval = f"{audio_client.processing_interval:.1f}s"
-                
-                display.append(f"• Âm thanh: {audio_status} | VAD: {vad_status}")
-                display.append(f"  - File hiện tại: {audio_client.current_audio_file}")
-                display.append(f"  - Trạng thái: {audio_client.processing_status}")
-                display.append(f"  - Thời gian xử lý: {proc_time} | Khoảng cách: {proc_interval}")
-                display.append(f"  - Đã xử lý: {audio_client.total_audio_processed} mẫu")
-                display.append(f"  - Đã gửi thành công: {audio_client.sent_success_count} mẫu")
+                # Hiển thị thông tin về AudioRecorder
+                display.append(f"• Âm thanh: {audio_status}")
+                display.append(f"  - Kết nối WebSocket: {audio_client.last_ws_status}")
+                display.append(f"  - Chunk ID hiện tại: audio_chunk_{audio_client.save_counter}")
+                display.append(f"  - Đã xử lý: {audio_client.save_counter} mẫu")
+                display.append(f"  - Kích thước cửa sổ: {audio_client.window_size}s | Slide: {audio_client.slide_size}s")
+                display.append(f"  - Sample rate: {audio_client.sample_rate} Hz | Channels: {audio_client.channels}")
             
             # Thêm thông tin về hình ảnh nếu module camera đang chạy
             if camera_client:
@@ -235,7 +231,8 @@ def main():
         
         if audio_client:
             print(">> Dừng module âm thanh...")
-            audio_client.stop()
+            audio_client.stop_recording()
+            audio_client.close()
             
         if camera_client:
             print(">> Dừng module hình ảnh...")
