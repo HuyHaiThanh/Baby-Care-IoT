@@ -141,8 +141,8 @@ def main():
     
     print("-" * 60)
     print("\nSystem running. Press Ctrl+C to stop.")
-    print("Status display will start in 3 seconds...")
-    time.sleep(3)  # Give time to read initial info
+    print("Status display will start in 2 seconds...")
+    time.sleep(2)  # Give time to read initial info
     
     # Update interval
     update_interval = 1.0
@@ -200,45 +200,70 @@ def main():
         
         return status_lines
     
-    # Check if we're in a terminal that supports ANSI escape codes
-    if sys.stdout.isatty() and not args.debug:
-        # Use ANSI escape codes for clearing screen and cursor positioning
-        CLEAR_SCREEN = "\033[2J\033[1;1H"  # Clear entire screen and move cursor to top-left
-        
-        # Main display loop
-        try:
-            while running:
-                status_lines = get_status_display()
-                # Clear screen and print updated status
-                print(CLEAR_SCREEN, end='')
-                print("\n".join(status_lines))
-                time.sleep(update_interval)
-                
-        except KeyboardInterrupt:
-            logger.info("Stop signal received from user")
-    else:
-        # Fall back to static display for non-terminal or debug mode
-        print("\nRunning in static display mode (debug or non-terminal).")
-        print("Status information will be logged but not continuously displayed.")
-        
-        try:
-            # Print status once and then just wait
-            status_lines = get_status_display()
-            print("\n".join(status_lines))
+    # ANSI escape codes
+    CLEAR_SCREEN = "\033[2J\033[1;1H"  # Clear entire screen and move cursor to top-left
+    CLEAR_LINE = "\033[2K\033[G"       # Clear current line and move cursor to beginning of line
+    
+    # Try to detect whether the terminal supports ANSI escape codes
+    # Not 100% reliable, but for Raspberry Pi's terminal it should work
+    ansi_supported = sys.stdout.isatty()
+    
+    try:
+        # Use different display modes based on terminal capability and debug mode
+        if args.debug:
+            # Debug mode - show single line status updates
+            print("Running in debug mode with simplified status updates.")
+            
+            # Print full status once initially
+            print("\n".join(get_status_display()))
+            print("\nContinuous status updates (press Ctrl+C to stop):")
             
             while running:
                 time.sleep(update_interval)
-                if args.debug:
-                    # In debug mode, periodically print just a simple status line
-                    runtime = time.time() - start_time
-                    mins, secs = divmod(int(runtime), 60)
-                    print(f"[{mins:02d}:{secs:02d}] Running: A:{audio_client.save_counter if audio_client else 'N/A'} | C:{camera_client.total_photos_taken if camera_client else 'N/A'}")
+                runtime = time.time() - start_time
+                mins, secs = divmod(int(runtime), 60)
+                audio_count = audio_client.save_counter if audio_client else 'N/A'
+                camera_count = camera_client.total_photos_taken if camera_client else 'N/A'
                 
-        except KeyboardInterrupt:
-            logger.info("Stop signal received from user")
+                # Use ANSI escape codes if terminal likely supports them
+                if ansi_supported:
+                    print(f"{CLEAR_LINE}[{mins:02d}:{secs:02d}] Audio processed: {audio_count} chunks | Images captured: {camera_count}", end='\r')
+                else:
+                    print(f"[{mins:02d}:{secs:02d}] Audio: {audio_count} | Images: {camera_count}")
+                    
+                # Print a full update every 10 seconds in debug mode
+                if secs % 10 == 0:
+                    print("\n" + "-" * 40)
+                    print("Detailed status update:")
+                    print("\n".join(get_status_display()))
+                    print("-" * 40)
+        else:
+            # Normal mode - try to use ANSI escape codes for a clean display
+            if ansi_supported:
+                while running:
+                    # Clear screen and print updated status
+                    print(CLEAR_SCREEN, end='')
+                    print("\n".join(get_status_display()))
+                    time.sleep(update_interval)
+            else:
+                # Fallback for terminals without ANSI support
+                print("\nRunning in static display mode (non-ANSI terminal).")
+                print("Status information will be updated periodically but may scroll.")
+                
+                count = 0
+                while running:
+                    # Only print status every few seconds to reduce scrolling
+                    count += 1
+                    if count % 5 == 0:  # Every 5 seconds
+                        print("\n" + "=" * 30 + " STATUS UPDATE " + "=" * 30)
+                        print("\n".join(get_status_display()))
+                    time.sleep(update_interval)
+                    
+    except KeyboardInterrupt:
+        logger.info("Stop signal received from user")
     
     # Cleanup on exit
-    print("\nStopping system...")
+    print("\n\nStopping system...")
     
     if audio_client:
         print(">> Stopping audio module...")
