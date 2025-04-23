@@ -399,6 +399,58 @@ class CameraClient:
             logger.error(f"Lỗi khi chụp ảnh với PiCamera: {e}")
             return None
     
+    def capture_with_ffmpeg(self, output_path):
+        """Chụp ảnh bằng ffmpeg (nhanh và hiệu quả)"""
+        try:
+            # Đảm bảo thư mục tồn tại
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            # Kiểm tra camera tồn tại
+            devices = self.detect_video_devices()
+            device_path = None
+            
+            if devices:
+                device_path = devices[0]['device']
+                logger.info(f"Đã phát hiện camera: {device_path}")
+            else:
+                # Kiểm tra camera mặc định
+                if os.path.exists('/dev/video0'):
+                    device_path = '/dev/video0'
+                    logger.info("Sử dụng camera mặc định /dev/video0")
+            
+            if not device_path:
+                logger.error("Không tìm thấy thiết bị camera")
+                return None
+                
+            # Sử dụng ffmpeg để chụp nhanh một frame với độ phân giải thấp hơn
+            result = subprocess.run([
+                'ffmpeg',
+                '-y',
+                '-f', 'v4l2',
+                '-input_format', 'mjpeg',
+                '-video_size', '640x480',  # Giảm độ phân giải
+                '-i', device_path,
+                '-vframes', '1',
+                '-q:v', '5',  # Chất lượng thấp hơn để nhanh hơn
+                output_path
+            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=5)  # Thêm timeout để tránh bị treo
+            
+            # Kiểm tra file có được tạo thành công
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                logger.info(f"Đã chụp ảnh với ffmpeg: {output_path}")
+                return output_path
+            else:
+                stderr = result.stderr.decode()
+                logger.error(f"Lỗi chụp ảnh với ffmpeg: {stderr}")
+                return None
+                    
+        except subprocess.TimeoutExpired:
+            logger.error(f"Quá thời gian chụp ảnh với ffmpeg")
+            return None
+        except Exception as e:
+            logger.error(f"Lỗi khi chụp ảnh với ffmpeg: {e}")
+            return None
+    
     def capture_photo(self):
         """
         Chụp ảnh từ camera và lưu vào thư mục chỉ định
@@ -414,25 +466,32 @@ class CameraClient:
         filename = f"photo_{string_timestamp}.jpg"
         filepath = os.path.join(PHOTO_DIR, filename)
         
-        # Thử chụp ảnh bằng các phương pháp khác nhau
-        
-        # Thử với USB camera trước (fswebcam)
+        # Đầu tiên thử dùng ffmpeg vì nhanh và hiệu quả nhất
+        logger.info("Đang thử chụp ảnh bằng ffmpeg với độ phân giải thấp...")
+        result = self.capture_with_ffmpeg(filepath)
+        if result:
+            return result
+            
+        # Nếu không có ffmpeg hoặc ffmpeg thất bại, thử với fswebcam
+        logger.info("ffmpeg thất bại, đang thử chụp ảnh bằng fswebcam...")
         result = self.capture_with_fswebcam(filepath)
         if result:
             return result
             
         # Nếu không có USB camera, thử dùng PiCamera
         if PICAMERA_AVAILABLE:
+            logger.info("Đang thử chụp ảnh bằng PiCamera...")
             result = self.capture_with_picamera(filepath)
             if result:
                 return result
         
         # Thử dùng libcamera-still (cho Raspberry Pi OS mới)
+        logger.info("Đang thử chụp ảnh bằng libcamera-still...")
         result = self.capture_with_libcamera(filepath)
         if result:
             return result
             
-        logger.error("Không thể chụp ảnh: Không tìm thấy thiết bị camera hỗ trợ")
+        logger.error("Không thể chụp ảnh: Đã thử tất cả các phương pháp chụp ảnh nhưng đều thất bại")
         return None
     
     def get_image_as_base64(self, image_path, quality="high"):
