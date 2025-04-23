@@ -39,7 +39,7 @@ class CameraClient:
     """
     Client xử lý chụp ảnh và gửi hình ảnh đến server
     """
-    def __init__(self, use_websocket=True, interval=1):  # Giảm xuống 1 giây mặc định
+    def __init__(self, use_websocket=True, interval=1):  # Mặc định là 1 giây
         """
         Khởi tạo camera client
         
@@ -48,7 +48,7 @@ class CameraClient:
             interval (int): Khoảng thời gian giữa các lần chụp ảnh (giây)
         """
         self.use_websocket = use_websocket
-        self.interval = interval
+        self.interval = interval  # Đảm bảo interval được sử dụng trong toàn class
         self.running = False
         self.ws = None
         self.ws_connected = False
