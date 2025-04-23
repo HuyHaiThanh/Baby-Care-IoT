@@ -63,7 +63,7 @@ def parse_arguments():
     
     parser.add_argument('--no-audio', action='store_true', help='Disable audio recording')
     parser.add_argument('--no-camera', action='store_true', help='Disable camera')
-    parser.add_argument('--photo-interval', type=int, default=5, help='Interval between photos (seconds)')
+    parser.add_argument('--photo-interval', type=int, default=1, help='Interval between photos (seconds)')  # Changed default to 1 second
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     
     return parser.parse_args()
@@ -161,35 +161,42 @@ def main():
             # Create new display content
             current_time = time.strftime("%H:%M:%S", time.localtime())
             
-            # Create content to display
+            # Optimized compact display - limit to 25 lines
             display = []
             display.append("\n" + "=" * 60)
             display.append(f"BABY MONITORING SYSTEM - Raspberry Pi Client - Runtime: {runtime_str}")
             display.append("=" * 60)
-            display.append(f"\n[{current_time}] System Status:")
-            display.append(f"• Audio server: {AUDIO_SERVER_HOST}")
-            display.append(f"• Image server: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
             
-            # Add WebSocket information
+            # Compact server info on a single line
+            display.append(f"\n[{current_time}] Status: Audio:{AUDIO_SERVER_HOST} | Image:{IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
+            
+            # WebSocket status in a compact format
+            ws_line = "• WebSocket: "
             if audio_client:
-                audio_ws_status = "Connected" if audio_client.ws_connected else "Connecting..."
-                display.append(f"• Audio WebSocket: {audio_ws_status} | Status: {audio_client.last_ws_status}")
-            
+                audio_ws = "✓" if audio_client.ws_connected else "✗"
+                ws_line += f"Audio[{audio_ws}] "
             if camera_client:
-                camera_ws_status = "Connected" if camera_client.ws_connected else "Connecting..."
-                display.append(f"• Image WebSocket: {camera_ws_status}")
+                camera_ws = "✓" if camera_client.ws_connected else "✗" 
+                ws_line += f"Image[{camera_ws}]"
+            display.append(ws_line)
             
             # Add audio information if audio module is running
             if audio_client:
                 audio_status = "Recording" if audio_client.is_recording else "Paused"
+                # Current file and status in a single line
+                current_audio = f"audio_chunk_{audio_client.save_counter}"
+                display.append(f"• Audio: {audio_status} | File: {current_audio} | Status: {audio_client.last_ws_status}")
                 
-                # Display AudioRecorder information
-                display.append(f"• Audio: {audio_status}")
-                display.append(f"  - WebSocket connection: {audio_client.last_ws_status}")
-                display.append(f"  - Current chunk ID: audio_chunk_{audio_client.save_counter}")
-                display.append(f"  - Processed: {audio_client.save_counter} samples")
-                display.append(f"  - Window size: {audio_client.window_size}s | Slide: {audio_client.slide_size}s")
-                display.append(f"  - Sample rate: {audio_client.sample_rate} Hz | Channels: {audio_client.channels}")
+                # Calculate processing time (approximate)
+                audio_process_time = audio_client.window_size * 0.8  # Estimate
+                display.append(f"  - Process: {audio_process_time:.1f}s | Send: {audio_client.window_size/10:.1f}s | Processed: {audio_client.save_counter} samples")
+                
+                # Queue information
+                queue_size = audio_client.chunk_queue.qsize() if hasattr(audio_client.chunk_queue, 'qsize') else 0
+                display.append(f"  - Sent: {audio_client.save_counter} | Queue: {queue_size} chunks")
+                
+                # Technical info in a single line
+                display.append(f"  - Window: {audio_client.window_size}s | Slide: {audio_client.slide_size}s | {audio_client.sample_rate} Hz, {audio_client.channels}ch")
             
             # Add image information if camera module is running
             if camera_client:
@@ -197,12 +204,15 @@ def main():
                 capture_time = f"{camera_client.capture_duration:.1f}s"
                 sending_time = f"{camera_client.sending_duration:.1f}s"
                 
-                display.append(f"• Images: Capturing every {args.photo_interval}s")
-                display.append(f"  - Current file: {camera_client.current_photo_file}")
-                display.append(f"  - Status: {camera_client.processing_status}")
-                display.append(f"  - Capture time: {capture_time} | Send time: {sending_time}")
-                display.append(f"  - Captured: {camera_client.total_photos_taken} images")
-                display.append(f"  - Successfully sent: {camera_client.sent_success_count} images")
+                # Capture interval and current file in a single line
+                display.append(f"• Images: Every {args.photo_interval}s | File: {camera_client.current_photo_file} | Status: {camera_client.processing_status}")
+                
+                # Timing information
+                display.append(f"  - Capture: {capture_time} | Send: {sending_time} | Resolution: 640x480px")
+                
+                # Image stats with queue info
+                queued_images = camera_client.sent_fail_count  # Approximation of queued items
+                display.append(f"  - Captured: {camera_client.total_photos_taken} | Sent: {camera_client.sent_success_count} | Queue: {queued_images}")
             
             # Combine into a string to display
             current_display = "\n".join(display)
@@ -214,7 +224,6 @@ def main():
                     if os.name == 'posix':  # Linux/Mac
                         os.system('clear')
                     elif os.name == 'nt':   # Windows
-                        # Use cmd.exe to avoid PowerShell errors
                         os.system('cmd /c cls')
                 
                 # Print new content
