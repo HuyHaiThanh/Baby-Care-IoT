@@ -18,18 +18,18 @@ ARCHIVE_DIR = os.path.join(BASE_DIR, "archive")
 # Thông số server
 IMAGE_SERVER_HOST = "192.168.5.50"  # Địa chỉ server xử lý hình ảnh
 IMAGE_SERVER_PORT = 8080              # Port server xử lý hình ảnh
-AUDIO_SERVER_HOST = "https://759e-42-112-80-76.ngrok-free.app/"  # Địa chỉ server xử lý âm thanh
+AUDIO_SERVER_HOST = "759e-42-112-80-76.ngrok-free.app"  # Địa chỉ server xử lý âm thanh (đã bỏ https:// và dấu / cuối)
 AUDIO_SERVER_PORT = 8000              # Port server xử lý âm thanh
 
 # URL cho kết nối HTTP
 IMAGE_SERVER_URL = f"http://{IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}"
-AUDIO_SERVER_URL = f"http://{AUDIO_SERVER_HOST}"
+AUDIO_SERVER_URL = f"https://{AUDIO_SERVER_HOST}"  # Sử dụng HTTPS cho ngrok
 
 # URL các API endpoint
 IMAGE_API_ENDPOINT = f"{IMAGE_SERVER_URL}/api/images"
 AUDIO_API_ENDPOINT = f"{AUDIO_SERVER_URL}/api/audio"
 IMAGE_WS_ENDPOINT = f"ws://{IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}/ws"
-AUDIO_WS_ENDPOINT = f"ws://{AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT}/ws"
+AUDIO_WS_ENDPOINT = f"wss://{AUDIO_SERVER_HOST}/ws"  # Sử dụng WSS cho ngrok
 
 # Thông số thu thập dữ liệu
 PHOTO_INTERVAL = 1  # Khoảng thời gian chụp ảnh (giây)
