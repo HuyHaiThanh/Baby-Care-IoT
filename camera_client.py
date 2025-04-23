@@ -71,7 +71,6 @@ class CameraClient:
             device_id=DEVICE_ID,
             client_type="camera"
         )
-        self.ws_connected = False
         
         # Create required directories
         os.makedirs(PHOTO_DIR, exist_ok=True)
