@@ -478,7 +478,7 @@ class CameraClient:
     
     def send_image_via_websocket(self, image_path, timestamp, quality="high"):
         """
-        Gửi hình ảnh qua WebSocket theo định dạng yêu cầu của server
+        Gửi hình ảnh qua WebSocket theo định dạng đơn giản hóa
         
         Args:
             image_path (str): Đường dẫn đến file hình ảnh
@@ -493,23 +493,21 @@ class CameraClient:
             return False
         
         try:
-            # Chuyển đổi hình ảnh thành base64
+            # Chuyển đổi hình ảnh thành base64 (mặc định chất lượng "high")
             image_base64 = self.get_image_as_base64(image_path, quality)
             if not image_base64:
                 return False
                 
-            # Tạo message theo định dạng yêu cầu của server
+            # Tạo message với cấu trúc đơn giản hóa (không gửi device_id và quality)
             message = {
                 'type': 'image',
                 'timestamp': timestamp,
-                'device_id': DEVICE_ID,
-                'quality': quality,
                 'image_data': image_base64
             }
             
             # Gửi qua WebSocket
             self.ws.send(json.dumps(message))
-            logger.info(f"Đã gửi hình ảnh qua WebSocket lúc {timestamp} (chất lượng: {quality})")
+            logger.info(f"Đã gửi hình ảnh qua WebSocket lúc {timestamp}")
             return True
             
         except Exception as e:

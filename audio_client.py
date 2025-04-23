@@ -595,6 +595,7 @@ class AudioClient:
             
             # Tạo message với cấu trúc đơn giản hóa (không gửi device_id vì đã gửi khi kết nối)
             message = {
+                'type': 'audio',
                 'timestamp': timestamp,
                 'audio_data': audio_base64
             }

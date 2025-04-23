@@ -6,7 +6,7 @@ import socket
 
 # Thông tin thiết bị
 DEVICE_NAME = "Baby-Monitor-Pi2B"
-DEVICE_ID = "pi2b-01"  # ID định danh thiết bị
+DEVICE_ID = "c17ca988-1877-4b72-a5ed-47beee86f2ae"  # ID định danh thiết bị
 
 # Các thư mục
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -16,8 +16,8 @@ AUDIO_DIR = os.path.join(BASE_DIR, "audio")
 ARCHIVE_DIR = os.path.join(BASE_DIR, "archive")
 
 # Thông số server
-IMAGE_SERVER_HOST = "192.168.1.100"  # Địa chỉ server xử lý hình ảnh
-IMAGE_SERVER_PORT = 8000              # Port server xử lý hình ảnh
+IMAGE_SERVER_HOST = "192.168.5.50"  # Địa chỉ server xử lý hình ảnh
+IMAGE_SERVER_PORT = 8080              # Port server xử lý hình ảnh
 AUDIO_SERVER_HOST = "192.168.1.101"  # Địa chỉ server xử lý âm thanh
 AUDIO_SERVER_PORT = 8001              # Port server xử lý âm thanh
 
