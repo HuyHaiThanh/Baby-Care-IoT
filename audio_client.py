@@ -71,6 +71,10 @@ class AudioClient:
         self.sent_fail_count = 0
         self.total_audio_processed = 0
         
+        # Theo dõi file đang xử lý
+        self.current_audio_file = "Không có"
+        self.processing_status = "Đang chờ"
+        
         if PYAUDIO_AVAILABLE:
             self.format = pyaudio.paInt16
             self.audio = pyaudio.PyAudio()
@@ -457,6 +461,9 @@ class AudioClient:
         string_timestamp, float_timestamp = get_timestamp()
         chunk_id = f"audio_{string_timestamp}"
         
+        # Cập nhật trạng thái xử lý
+        self.processing_status = "Đang phân tích âm thanh"
+        
         # Đầu tiên kiểm tra xem đoạn âm thanh này có nên được gửi đi không
         should_send, analysis_info = self.should_send_audio(window_data)
         
@@ -466,23 +473,33 @@ class AudioClient:
         if should_send:
             logger.info(f"Phát hiện âm thanh quan trọng (năng lượng tần số 250-750Hz: {analysis_info.get('target_freq_energy', 0):.1f}%). Gửi đi...")
             
+            # Lưu tên file hiện tại
+            self.current_audio_file = chunk_id
+            
             # Gửi dữ liệu âm thanh đến server qua WebSocket hoặc REST API
             if self.use_websocket and self.ws_connected:
+                self.processing_status = "Đang gửi qua WebSocket"
                 success = self.send_audio_via_websocket(window_data, float_timestamp)
                 if success:
                     self.sent_success_count += 1
+                    self.processing_status = "Đã gửi thành công"
                 else:
                     self.sent_fail_count += 1
+                    self.processing_status = "Lỗi gửi âm thanh"
             else:
                 # Lưu thành file tạm và gửi qua REST API
                 filepath = os.path.join(TEMP_DIR, f"{chunk_id}.wav")
                 self.save_to_wav(window_data, filepath)
+                self.processing_status = "Đang gửi qua REST API"
                 success = self.send_audio_to_server(filepath, float_timestamp)
                 if success:
                     self.sent_success_count += 1
+                    self.processing_status = "Đã gửi thành công"
                 else:
                     self.sent_fail_count += 1
+                    self.processing_status = "Lỗi gửi âm thanh"
         else:
+            self.processing_status = f"Bỏ qua (lý do: {analysis_info.get('reason', 'không xác định')})"
             logger.debug(f"Bỏ qua chunk âm thanh (lý do: {analysis_info.get('reason')})")
     
     def get_audio_as_base64(self, audio_data):

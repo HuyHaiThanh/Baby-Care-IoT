@@ -145,7 +145,7 @@ def main():
             if not args.debug and os.name == 'posix':  # Chỉ trên hệ điều hành giống Unix
                 os.system('clear')
                 print("\n" + "=" * 60)
-                print("HỆ THỐNG GIÁM SÁT TRẺ EM - Raspberry Pi Client")  # Đã bỏ "(Đang chạy)"
+                print("HỆ THỐNG GIÁM SÁT TRẺ EM - Raspberry Pi Client")
                 print("=" * 60)
             
             # In thông tin trạng thái kết nối và hoạt động
@@ -169,31 +169,19 @@ def main():
                 audio_status = "Đang ghi âm" if audio_client.is_recording else "Tạm dừng"
                 vad_status = "Bật" if audio_client.use_vad_filter else "Tắt"
                 
-                # Hiển thị thông tin về việc gửi âm thanh thành công/thất bại
-                success_rate = 0
-                if (audio_client.sent_success_count + audio_client.sent_fail_count) > 0:
-                    success_rate = (audio_client.sent_success_count / (audio_client.sent_success_count + audio_client.sent_fail_count)) * 100
-                
                 print(f"• Âm thanh: {audio_status} | VAD: {vad_status}")
+                print(f"  - File hiện tại: {audio_client.current_audio_file}")
+                print(f"  - Trạng thái: {audio_client.processing_status}")
                 print(f"  - Đã xử lý: {audio_client.total_audio_processed} mẫu")
                 print(f"  - Đã gửi thành công: {audio_client.sent_success_count} mẫu")
-                print(f"  - Gửi thất bại: {audio_client.sent_fail_count} mẫu")
-                print(f"  - Tỷ lệ thành công: {success_rate:.1f}%")
             
             # Cập nhật và hiển thị thông tin về hình ảnh
             if camera_client:
-                next_photo_in = max(0, args.photo_interval - (int(time.time()) % args.photo_interval))
-                
-                # Hiển thị thông tin về việc gửi ảnh thành công/thất bại
-                photo_success_rate = 0
-                if (camera_client.sent_success_count + camera_client.sent_fail_count) > 0:
-                    photo_success_rate = (camera_client.sent_success_count / (camera_client.sent_success_count + camera_client.sent_fail_count)) * 100
-                
-                print(f"• Hình ảnh: Chụp ảnh mỗi {args.photo_interval}s | Ảnh tiếp theo sau {next_photo_in}s")
+                print(f"• Hình ảnh: Chụp ảnh mỗi {args.photo_interval}s")
+                print(f"  - File hiện tại: {camera_client.current_photo_file}")
+                print(f"  - Trạng thái: {camera_client.processing_status}")
                 print(f"  - Đã chụp: {camera_client.total_photos_taken} ảnh")
                 print(f"  - Đã gửi thành công: {camera_client.sent_success_count} ảnh")
-                print(f"  - Gửi thất bại: {camera_client.sent_fail_count} ảnh") 
-                print(f"  - Tỷ lệ thành công: {photo_success_rate:.1f}%")
             
             # Update status every 5 seconds
             time.sleep(5)

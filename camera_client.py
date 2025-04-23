@@ -60,6 +60,11 @@ class CameraClient:
         self.sent_fail_count = 0
         self.total_photos_taken = 0
         
+        # Theo dõi file đang xử lý
+        self.current_photo_file = "Không có"
+        self.processing_status = "Đang chờ"
+        self.next_photo_time = time.time() + interval
+        
         # Tạo các thư mục cần thiết
         os.makedirs(PHOTO_DIR, exist_ok=True)
         os.makedirs(TEMP_DIR, exist_ok=True)
@@ -563,20 +568,31 @@ class CameraClient:
         Returns:
             bool: True nếu thành công, False nếu không
         """
+        # Cập nhật trạng thái
+        self.processing_status = "Đang chụp ảnh..."
+        
         # Chụp ảnh
         image_path = self.capture_photo()
         
         if not image_path:
             logger.error("Không thể chụp ảnh để gửi đến server")
             self.sent_fail_count += 1
+            self.processing_status = "Lỗi chụp ảnh"
+            self.current_photo_file = "Không có"
             return False
             
+        # Lưu tên file hiện tại
+        self.current_photo_file = os.path.basename(image_path)
+        
         # Tăng số ảnh đã chụp
         self.total_photos_taken += 1
             
         # Gửi hình ảnh đến server
         _, timestamp = get_timestamp()
         success = False
+        
+        # Cập nhật trạng thái
+        self.processing_status = "Đang gửi ảnh..."
         
         if self.use_websocket and self.ws_connected:
             # Ưu tiên gửi qua WebSocket nếu có kết nối
@@ -585,11 +601,15 @@ class CameraClient:
             # Nếu không có kết nối WebSocket, gửi qua REST API
             success = self.send_image_to_server(image_path, timestamp, quality)
             
-        # Cập nhật biến đếm thành công/thất bại
+        # Cập nhật biến đếm thành công/thất bại và trạng thái
         if success:
             self.sent_success_count += 1
+            self.processing_status = "Đã gửi thành công"
+            # Cập nhật thời gian cho lần chụp tiếp theo
+            self.next_photo_time = time.time() + self.interval
         else:
             self.sent_fail_count += 1
+            self.processing_status = "Lỗi gửi ảnh"
             
         return success
 
