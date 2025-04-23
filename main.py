@@ -290,7 +290,7 @@ def main():
         
         # Connection status lines - one per server
         audio_ws_status = "Connected" if audio_client and audio_client.ws_connected else "Connecting..."
-        status_lines.append(f"• Audio Server: {AUDIO_SERVER_HOST} | Status: {audio_ws_status}")
+        status_lines.append(f"• Audio Server: {AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT} | Status: {audio_ws_status}")
         
         image_ws_status = "Connected" if camera_client and camera_client.ws_connected else "Connecting..."
         status_lines.append(f"• Image Server: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT} | Status: {image_ws_status}")
