@@ -138,7 +138,7 @@ def main():
     print("\nHệ thống đang chạy. Nhấn Ctrl+C để dừng.\n")
     
     # Khoảng thời gian cập nhật thông tin (giây)
-    update_interval = 0.5  # Cập nhật mỗi 0.5 giây để nhanh hơn
+    update_interval = 0.5  # Cập nhật mỗi 1 giây 
     
     # Vòng lặp chính hiển thị trạng thái hệ thống
     try:
