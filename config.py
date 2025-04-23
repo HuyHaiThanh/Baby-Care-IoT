@@ -23,7 +23,7 @@ AUDIO_SERVER_PORT = 8000              # Port server xử lý âm thanh
 
 # URL cho kết nối HTTP
 IMAGE_SERVER_URL = f"http://{IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}"
-AUDIO_SERVER_URL = f"http://{AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT}"
+AUDIO_SERVER_URL = f"http://{AUDIO_SERVER_HOST}"
 
 # URL các API endpoint
 IMAGE_API_ENDPOINT = f"{IMAGE_SERVER_URL}/api/images"
