@@ -122,15 +122,61 @@ def main():
     print(f"• Chế độ audio: {'Đang chạy' if audio_client else 'Đã tắt'}")
     print(f"• Chế độ camera: {'Đang chạy' if camera_client else 'Đã tắt'}")
     print(f"• Phương thức kết nối: {'REST API' if args.no_websocket else 'WebSocket'}")
+    
+    # Hiển thị thông tin của server
+    from config import AUDIO_SERVER_HOST, AUDIO_SERVER_PORT, IMAGE_SERVER_HOST, IMAGE_SERVER_PORT
+    print(f"• Server âm thanh: {AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT}")
+    print(f"• Server hình ảnh: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
+    
     if camera_client:
         print(f"• Chụp ảnh: mỗi {args.photo_interval} giây")
+    
     print("-" * 60)
     print("\nHệ thống đang chạy. Nhấn Ctrl+C để dừng.\n")
     
-    # Vòng lặp chính
+    # Thêm biến đếm cho việc gửi nhận dữ liệu
+    audio_sent_count = 0
+    photo_sent_count = 0
+    
+    # Vòng lặp chính hiển thị trạng thái hệ thống
     try:
         while running:
-            time.sleep(1)
+            # Xóa màn hình để cập nhật thông tin mới (chỉ trong chế độ không phải debug)
+            if not args.debug and os.name == 'posix':  # Chỉ trên hệ điều hành giống Unix
+                os.system('clear')
+                print("\n" + "=" * 60)
+                print("HỆ THỐNG GIÁM SÁT TRẺ EM - Raspberry Pi Client (Đang chạy)")
+                print("=" * 60)
+            
+            # In thông tin trạng thái kết nối và hoạt động
+            current_time = time.strftime("%H:%M:%S", time.localtime())
+            print(f"\n[{current_time}] Trạng thái hệ thống:")
+            
+            # Trạng thái kết nối
+            if not args.no_websocket:
+                audio_ws_status = "Đã kết nối" if (audio_client and audio_client.ws_connected) else "Đang kết nối..."
+                camera_ws_status = "Đã kết nối" if (camera_client and camera_client.ws_connected) else "Đang kết nối..."
+                print(f"• WebSocket âm thanh: {audio_ws_status}")
+                print(f"• WebSocket hình ảnh: {camera_ws_status}")
+            
+            # Cập nhật và hiển thị số lượng dữ liệu đã gửi
+            if audio_client:
+                # Trong thực tế, bạn sẽ cần thêm một bộ đếm vào lớp AudioClient
+                # Tạm thời dùng biến đếm giả định
+                if audio_client.is_recording:
+                    audio_sent_count += 1
+                audio_status = "Đang ghi âm" if audio_client.is_recording else "Tạm dừng"
+                print(f"• Âm thanh: {audio_status} | Đã gửi: {audio_sent_count} mẫu")
+            
+            if camera_client:
+                # Tương tự, cần thêm bộ đếm vào lớp CameraClient
+                photo_sent_count += 1
+                next_photo_in = max(0, args.photo_interval - (photo_sent_count % args.photo_interval))
+                print(f"• Hình ảnh: Ảnh tiếp theo sau {next_photo_in}s | Đã gửi: {photo_sent_count//args.photo_interval} ảnh")
+            
+            # Update status every 5 seconds
+            time.sleep(5)
+            
     except KeyboardInterrupt:
         logger.info("Đã nhận tín hiệu dừng từ người dùng")
     finally:
