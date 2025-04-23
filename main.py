@@ -147,7 +147,7 @@ def main():
     # Update interval
     update_interval = 1.0
     
-    # Function to get status information with improved connection display
+    # Function to get status information with improved display format
     def get_status_display():
         runtime = time.time() - start_time
         hours, remainder = divmod(int(runtime), 3600)
@@ -169,16 +169,20 @@ def main():
         
         # Audio information
         if audio_client:
-            # Improve status display - show recording instead of connection issue
+            # Improve status display
             audio_status = "Recording" if audio_client.is_recording else "Paused"
-            audio_process_status = f"Processing (Chunk: audio_chunk_{audio_client.save_counter})"
-            
-            status_lines.append(f"• Audio: {audio_status} | Status: {audio_process_status}")
+            status_lines.append(f"• Audio: Every 1s")
+            status_lines.append(f"  Status: {audio_status}")
+            status_lines.append(f"  File: audio_chunk_{audio_client.save_counter}")
             status_lines.append(f"  - Process time: ~{audio_client.window_size*0.8:.1f}s | Send time: ~{audio_client.window_size/10:.1f}s")
             
-            # Queue information
+            # Queue information - only show successfully processed items, not sent
             queue_size = audio_client.chunk_queue.qsize() if hasattr(audio_client.chunk_queue, 'qsize') else 0
-            status_lines.append(f"  - Processed: {audio_client.save_counter} | Sent: {audio_client.save_counter} | Queue: {queue_size}")
+            processed = audio_client.save_counter
+            sent = 0  # Resetting sent count because we're not actually connected
+            if audio_client.ws_connected:
+                sent = processed  # Only consider items sent if we're connected
+            status_lines.append(f"  - Processed: {processed} | Sent: {sent} | Queue: {queue_size}")
             status_lines.append(f"  - Window: {audio_client.window_size}s | Slide: {audio_client.slide_size}s | {audio_client.sample_rate} Hz, {audio_client.channels}ch")
         
         # Camera information
@@ -186,50 +190,64 @@ def main():
             capture_time = f"{camera_client.capture_duration:.1f}s"
             sending_time = f"{camera_client.sending_duration:.1f}s"
             
-            status_lines.append(f"• Images: Every {args.photo_interval}s | File: {camera_client.current_photo_file}")
-            status_lines.append(f"  - Status: {camera_client.processing_status} | Resolution: 640x480px")
+            status_lines.append(f"• Images: Every {args.photo_interval}s")
+            status_lines.append(f"  - Status: {camera_client.processing_status}")
+            status_lines.append(f"  File: {camera_client.current_photo_file}")
+            status_lines.append(f"  Resolution: 640x480px")
             status_lines.append(f"  - Capture: {capture_time} | Send: {sending_time}")
-            status_lines.append(f"  - Captured: {camera_client.total_photos_taken} | Sent: {camera_client.sent_success_count} | Queue: {camera_client.sent_fail_count}")
+            
+            # Only count as sent if we're actually connected
+            sent_count = 0
+            if camera_client.ws_connected:
+                sent_count = camera_client.sent_success_count
+            
+            status_lines.append(f"  - Captured: {camera_client.total_photos_taken} | Sent: {sent_count} | Queue: {camera_client.sent_fail_count}")
         
         return status_lines
     
-    # ANSI escape codes
-    CLEAR_SCREEN = "\033[2J\033[1;1H"  # Clear entire screen and move cursor to top-left
-    SAVE_CURSOR = "\033[s"              # Save cursor position
-    RESTORE_CURSOR = "\033[u"           # Restore cursor position
-    CLEAR_LINE = "\033[2K\033[G"        # Clear current line and move cursor to beginning of line
-    
-    # Detect if this is running in a TTY that likely supports ANSI
-    is_tty = sys.stdout.isatty()
-    
-    # Use a single display mode that prevents scrolling and history buildup
+    # Try to use alternative display method that works better in all terminals
     try:
-        # Clear screen once at the beginning
-        if is_tty:
-            print(CLEAR_SCREEN, end='', flush=True)
+        # First clear any existing output and disable cursor
+        print("\033[2J\033[H\033[?25l", end="", flush=True)  # Clear screen, home cursor, hide cursor
+        
+        previous_output = ""
         
         # Main display loop
         while running:
-            status_lines = get_status_display()
-            
-            if is_tty:
-                # Move to top of screen and print status
-                print(CLEAR_SCREEN, end='', flush=True)
-                print("\n".join(status_lines), flush=True)
-            else:
-                # For non-TTY environments (like redirected output), add a separator
-                print("\n" + "=" * 30 + " STATUS UPDATE " + "=" * 30)
-                print("\n".join(status_lines))
-            
-            # Wait for next update
-            time.sleep(update_interval)
+            try:
+                # Get current status
+                status_lines = get_status_display()
+                current_output = "\n".join(status_lines)
+                
+                # Only update if something changed
+                if current_output != previous_output:
+                    # Move cursor to home position
+                    print("\033[H", end="", flush=True)
+                    
+                    # Print new status
+                    print(current_output, end="", flush=True)
+                    
+                    # Clear to end of screen to remove any previous content
+                    print("\033[J", end="", flush=True)
+                    
+                    # Remember output
+                    previous_output = current_output
+                
+                # Wait for next update
+                time.sleep(update_interval)
+            except Exception as e:
+                # If we encounter an error with this display method, fall back
+                logger.error(f"Display error: {e}")
+                break
                 
     except KeyboardInterrupt:
-        print("\n")  # Add a newline after ^C
         logger.info("Stop signal received from user")
+    finally:
+        # Show cursor again
+        print("\033[?25h", end="", flush=True)
     
     # Cleanup on exit
-    print("Stopping system...")
+    print("\n\nStopping system...")
     
     if audio_client:
         print(">> Stopping audio module...")
@@ -245,6 +263,9 @@ def main():
     final_status = get_status_display()
     print("\n".join(final_status))
     print("\n✓ System stopped safely")
+    
+    # Ensure we exit properly
+    return 0
 
 if __name__ == "__main__":
     main()
