@@ -66,6 +66,7 @@ def parse_arguments():
     parser.add_argument('--no-audio', action='store_true', help='Tắt chức năng ghi âm')
     parser.add_argument('--no-camera', action='store_true', help='Tắt chức năng camera')
     parser.add_argument('--no-websocket', action='store_true', help='Chỉ sử dụng REST API (không WebSocket)')
+    parser.add_argument('--no-vad', action='store_true', help='Tắt bộ lọc Voice Activity Detection')
     parser.add_argument('--photo-interval', type=int, default=5, help='Khoảng thời gian giữa các lần chụp ảnh (giây)')
     parser.add_argument('--debug', action='store_true', help='Bật chế độ debug')
     
@@ -95,7 +96,10 @@ def main():
     # Khởi động AudioClient nếu không bị tắt qua tham số
     if not args.no_audio:
         print("\n>> Khởi động module xử lý âm thanh...")
-        audio_client = AudioClient(use_websocket=not args.no_websocket)
+        audio_client = AudioClient(
+            use_websocket=not args.no_websocket,
+            use_vad_filter=not args.no_vad
+        )
         if audio_client.start():
             print("✓ Module âm thanh đã khởi động thành công")
         else:
