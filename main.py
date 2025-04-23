@@ -145,12 +145,17 @@ def main():
             if not args.debug and os.name == 'posix':  # Chỉ trên hệ điều hành giống Unix
                 os.system('clear')
                 print("\n" + "=" * 60)
-                print("HỆ THỐNG GIÁM SÁT TRẺ EM - Raspberry Pi Client (Đang chạy)")
+                print("HỆ THỐNG GIÁM SÁT TRẺ EM - Raspberry Pi Client")  # Đã bỏ "(Đang chạy)"
                 print("=" * 60)
             
             # In thông tin trạng thái kết nối và hoạt động
             current_time = time.strftime("%H:%M:%S", time.localtime())
             print(f"\n[{current_time}] Trạng thái hệ thống:")
+            
+            # Hiển thị thông tin IP server
+            from config import AUDIO_SERVER_HOST, AUDIO_SERVER_PORT, IMAGE_SERVER_HOST, IMAGE_SERVER_PORT
+            print(f"• Server âm thanh: {AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT}")
+            print(f"• Server hình ảnh: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
             
             # Trạng thái kết nối
             if not args.no_websocket:
@@ -159,20 +164,36 @@ def main():
                 print(f"• WebSocket âm thanh: {audio_ws_status}")
                 print(f"• WebSocket hình ảnh: {camera_ws_status}")
             
-            # Cập nhật và hiển thị số lượng dữ liệu đã gửi
+            # Cập nhật và hiển thị thông tin về âm thanh
             if audio_client:
-                # Trong thực tế, bạn sẽ cần thêm một bộ đếm vào lớp AudioClient
-                # Tạm thời dùng biến đếm giả định
-                if audio_client.is_recording:
-                    audio_sent_count += 1
                 audio_status = "Đang ghi âm" if audio_client.is_recording else "Tạm dừng"
-                print(f"• Âm thanh: {audio_status} | Đã gửi: {audio_sent_count} mẫu")
+                vad_status = "Bật" if audio_client.use_vad_filter else "Tắt"
+                
+                # Hiển thị thông tin về việc gửi âm thanh thành công/thất bại
+                success_rate = 0
+                if (audio_client.sent_success_count + audio_client.sent_fail_count) > 0:
+                    success_rate = (audio_client.sent_success_count / (audio_client.sent_success_count + audio_client.sent_fail_count)) * 100
+                
+                print(f"• Âm thanh: {audio_status} | VAD: {vad_status}")
+                print(f"  - Đã xử lý: {audio_client.total_audio_processed} mẫu")
+                print(f"  - Đã gửi thành công: {audio_client.sent_success_count} mẫu")
+                print(f"  - Gửi thất bại: {audio_client.sent_fail_count} mẫu")
+                print(f"  - Tỷ lệ thành công: {success_rate:.1f}%")
             
+            # Cập nhật và hiển thị thông tin về hình ảnh
             if camera_client:
-                # Tương tự, cần thêm bộ đếm vào lớp CameraClient
-                photo_sent_count += 1
-                next_photo_in = max(0, args.photo_interval - (photo_sent_count % args.photo_interval))
-                print(f"• Hình ảnh: Ảnh tiếp theo sau {next_photo_in}s | Đã gửi: {photo_sent_count//args.photo_interval} ảnh")
+                next_photo_in = max(0, args.photo_interval - (int(time.time()) % args.photo_interval))
+                
+                # Hiển thị thông tin về việc gửi ảnh thành công/thất bại
+                photo_success_rate = 0
+                if (camera_client.sent_success_count + camera_client.sent_fail_count) > 0:
+                    photo_success_rate = (camera_client.sent_success_count / (camera_client.sent_success_count + camera_client.sent_fail_count)) * 100
+                
+                print(f"• Hình ảnh: Chụp ảnh mỗi {args.photo_interval}s | Ảnh tiếp theo sau {next_photo_in}s")
+                print(f"  - Đã chụp: {camera_client.total_photos_taken} ảnh")
+                print(f"  - Đã gửi thành công: {camera_client.sent_success_count} ảnh")
+                print(f"  - Gửi thất bại: {camera_client.sent_fail_count} ảnh") 
+                print(f"  - Tỷ lệ thành công: {photo_success_rate:.1f}%")
             
             # Update status every 5 seconds
             time.sleep(5)

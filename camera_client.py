@@ -55,6 +55,11 @@ class CameraClient:
         self.ws_thread = None
         self.photo_thread = None
         
+        # Bộ đếm gửi dữ liệu
+        self.sent_success_count = 0
+        self.sent_fail_count = 0
+        self.total_photos_taken = 0
+        
         # Tạo các thư mục cần thiết
         os.makedirs(PHOTO_DIR, exist_ok=True)
         os.makedirs(TEMP_DIR, exist_ok=True)
@@ -563,16 +568,30 @@ class CameraClient:
         
         if not image_path:
             logger.error("Không thể chụp ảnh để gửi đến server")
+            self.sent_fail_count += 1
             return False
+            
+        # Tăng số ảnh đã chụp
+        self.total_photos_taken += 1
             
         # Gửi hình ảnh đến server
         _, timestamp = get_timestamp()
+        success = False
+        
         if self.use_websocket and self.ws_connected:
             # Ưu tiên gửi qua WebSocket nếu có kết nối
-            return self.send_image_via_websocket(image_path, timestamp, quality)
+            success = self.send_image_via_websocket(image_path, timestamp, quality)
         else:
             # Nếu không có kết nối WebSocket, gửi qua REST API
-            return self.send_image_to_server(image_path, timestamp, quality)
+            success = self.send_image_to_server(image_path, timestamp, quality)
+            
+        # Cập nhật biến đếm thành công/thất bại
+        if success:
+            self.sent_success_count += 1
+        else:
+            self.sent_fail_count += 1
+            
+        return success
 
 
 # Test module khi chạy trực tiếp

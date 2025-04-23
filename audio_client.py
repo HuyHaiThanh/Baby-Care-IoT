@@ -65,6 +65,12 @@ class AudioClient:
         self.buffer_lock = threading.Lock()
         self.chunk_size = 1024
         self.format = None
+        
+        # Bộ đếm gửi dữ liệu
+        self.sent_success_count = 0
+        self.sent_fail_count = 0
+        self.total_audio_processed = 0
+        
         if PYAUDIO_AVAILABLE:
             self.format = pyaudio.paInt16
             self.audio = pyaudio.PyAudio()
@@ -454,17 +460,28 @@ class AudioClient:
         # Đầu tiên kiểm tra xem đoạn âm thanh này có nên được gửi đi không
         should_send, analysis_info = self.should_send_audio(window_data)
         
+        # Tăng biến đếm tổng số mẫu đã xử lý
+        self.total_audio_processed += 1
+        
         if should_send:
             logger.info(f"Phát hiện âm thanh quan trọng (năng lượng tần số 250-750Hz: {analysis_info.get('target_freq_energy', 0):.1f}%). Gửi đi...")
             
             # Gửi dữ liệu âm thanh đến server qua WebSocket hoặc REST API
             if self.use_websocket and self.ws_connected:
-                self.send_audio_via_websocket(window_data, float_timestamp)
+                success = self.send_audio_via_websocket(window_data, float_timestamp)
+                if success:
+                    self.sent_success_count += 1
+                else:
+                    self.sent_fail_count += 1
             else:
                 # Lưu thành file tạm và gửi qua REST API
                 filepath = os.path.join(TEMP_DIR, f"{chunk_id}.wav")
                 self.save_to_wav(window_data, filepath)
-                self.send_audio_to_server(filepath, float_timestamp)
+                success = self.send_audio_to_server(filepath, float_timestamp)
+                if success:
+                    self.sent_success_count += 1
+                else:
+                    self.sent_fail_count += 1
         else:
             logger.debug(f"Bỏ qua chunk âm thanh (lý do: {analysis_info.get('reason')})")
     
