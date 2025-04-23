@@ -3,6 +3,7 @@ import websocket
 import threading
 import time
 import logging
+import traceback
 from utils import logger
 
 class WebSocketClient:
@@ -28,6 +29,8 @@ class WebSocketClient:
         self.running = False
         self.reconnect_interval = 5  # Seconds between reconnection attempts
         self.message_callback = None
+        
+        logger.info(f"Initialized {client_type} WebSocket client with URL: {ws_url}")
     
     def set_message_callback(self, callback):
         """
@@ -60,6 +63,7 @@ class WebSocketClient:
             
         except Exception as e:
             logger.error(f"Error processing {self.client_type} WebSocket message: {e}")
+            logger.error(traceback.format_exc())
 
     def _on_ws_error(self, ws, error):
         """
@@ -103,19 +107,30 @@ class WebSocketClient:
         self.ws_connected = True
         self.last_ws_status = "Connected"
         
-        # Send device ID as the first message
-        self.ws.send(self.device_id)
-        logger.info(f"Sent device ID {self.device_id} to {self.client_type} server")
+        try:
+            # Send device ID as the first message
+            self.ws.send(self.device_id)
+            logger.info(f"Sent device ID {self.device_id} to {self.client_type} server")
+        except Exception as e:
+            logger.error(f"Error sending device ID to {self.client_type} server: {e}")
+            logger.error(traceback.format_exc())
 
     def connect(self):
         """
         Start WebSocket connection thread
         """
-        self.running = True
-        self.ws_thread = threading.Thread(target=self._websocket_thread)
-        self.ws_thread.daemon = True
-        self.ws_thread.start()
-        logger.info(f"{self.client_type} WebSocket thread started")
+        try:
+            self.running = True
+            self.ws_thread = threading.Thread(target=self._websocket_thread)
+            self.ws_thread.daemon = True
+            self.ws_thread.start()
+            logger.info(f"{self.client_type} WebSocket thread started")
+        except Exception as e:
+            logger.error(f"Error starting {self.client_type} WebSocket thread: {e}")
+            logger.error(traceback.format_exc())
+            self.running = False
+            return False
+        return True
         
     def _connect_websocket(self):
         """
@@ -127,6 +142,9 @@ class WebSocketClient:
                 
             logger.info(f"Connecting to {self.client_type} WebSocket at {self.ws_url}")
             
+            # Enable more verbose logging for debugging
+            websocket.enableTrace(True)
+            
             self.ws = websocket.WebSocketApp(
                 self.ws_url,
                 on_open=self._on_ws_open,
@@ -134,11 +152,28 @@ class WebSocketClient:
                 on_error=self._on_ws_error,
                 on_close=self._on_ws_close
             )
-            self.ws.run_forever()
+            
+            # Use non-blocking call to run_forever() so we can handle exceptions
+            ws_thread = threading.Thread(target=self._run_websocket)
+            ws_thread.daemon = True
+            ws_thread.start()
+            
         except Exception as e:
             logger.error(f"Error connecting to {self.client_type} WebSocket: {e}")
+            logger.error(traceback.format_exc())
             self.ws_connected = False
             time.sleep(self.reconnect_interval)
+    
+    def _run_websocket(self):
+        """
+        Run the WebSocket connection with exception handling
+        """
+        try:
+            self.ws.run_forever()
+        except Exception as e:
+            logger.error(f"Error in WebSocket connection: {e}")
+            logger.error(traceback.format_exc())
+            self.ws_connected = False
     
     def _websocket_thread(self):
         """
@@ -146,9 +181,14 @@ class WebSocketClient:
         """
         # Connection loop
         while self.running:
-            if not self.ws_connected:
-                self._connect_websocket()
-            time.sleep(1)
+            try:
+                if not self.ws_connected:
+                    self._connect_websocket()
+                time.sleep(1)
+            except Exception as e:
+                logger.error(f"Error in WebSocket thread: {e}")
+                logger.error(traceback.format_exc())
+                time.sleep(self.reconnect_interval)
     
     def send_message(self, data):
         """
@@ -169,6 +209,7 @@ class WebSocketClient:
             return True
         except Exception as e:
             logger.error(f"Error sending {self.client_type} message: {e}")
+            logger.error(traceback.format_exc())
             self.ws_connected = False
             self.last_ws_status = f"Send error: {e}"
             return False
@@ -179,11 +220,15 @@ class WebSocketClient:
         """
         self.running = False
         
-        if self.ws and self.ws_connected:
-            self.ws.close()
-            self.ws_connected = False
-            
-        if self.ws_thread and self.ws_thread.is_alive():
-            self.ws_thread.join(timeout=1.0)
-            
-        logger.info(f"{self.client_type} WebSocket connection closed")
+        try:
+            if self.ws and self.ws_connected:
+                self.ws.close()
+                self.ws_connected = False
+                
+            if self.ws_thread and self.ws_thread.is_alive():
+                self.ws_thread.join(timeout=1.0)
+                
+            logger.info(f"{self.client_type} WebSocket connection closed")
+        except Exception as e:
+            logger.error(f"Error closing {self.client_type} WebSocket connection: {e}")
+            logger.error(traceback.format_exc())

@@ -6,6 +6,7 @@ import time
 import signal
 import sys
 import argparse
+import traceback
 
 # Redirect ALSA errors (run before importing audio libraries)
 # Save stderr to restore later if needed
@@ -97,16 +98,26 @@ def main():
             print("✓ Audio module started successfully")
         except Exception as e:
             print(f"✗ Cannot start audio module: {e}")
+            if args.debug:
+                print("Detailed error:")
+                traceback.print_exc()
             audio_client = None
     
     # Start CameraClient if not disabled via parameters
     if not args.no_camera:
         print("\n>> Starting image processing module...")
-        camera_client = CameraClient(interval=args.photo_interval)
-        if camera_client.start():
-            print("✓ Image module started successfully")
-        else:
-            print("✗ Cannot start image module")
+        try:
+            camera_client = CameraClient(interval=args.photo_interval)
+            if not camera_client.start():
+                print("✗ Camera client start() returned False")
+                camera_client = None
+            else:
+                print("✓ Image module started successfully")
+        except Exception as e:
+            print(f"✗ Cannot start image module: {e}")
+            if args.debug:
+                print("Detailed error:")
+                traceback.print_exc()
             camera_client = None
     
     if not audio_client and not camera_client:
