@@ -12,6 +12,8 @@ import json
 import base64
 import websocket
 import requests
+import scipy.signal as signal
+from scipy.fft import fft, fftfreq
 from io import BytesIO
 from config import (
     AUDIO_DIR, TEMP_DIR, DEVICE_ID, AUDIO_API_ENDPOINT, 
@@ -19,6 +21,13 @@ from config import (
     AUDIO_DURATION, AUDIO_SLIDE_SIZE, RECONNECT_INTERVAL
 )
 from utils import get_timestamp, make_api_request, logger
+
+# Cấu hình cho hệ thống phát hiện tiếng khóc
+FREQ_MIN = 250  # Tần số thấp nhất (Hz)
+FREQ_MAX = 750  # Tần số cao nhất (Hz)
+ENERGY_THRESHOLD = 0.01  # Ngưỡng năng lượng để phát hiện âm thanh
+VAD_THRESHOLD = 0.15  # Ngưỡng VAD
+TARGET_FREQ_THRESHOLD = 30.0  # Ngưỡng % năng lượng trong dải tần số quan tâm
 
 # Flag for checking if PyAudio is available
 PYAUDIO_AVAILABLE = False
@@ -34,14 +43,16 @@ class AudioClient:
     """
     Client xử lý ghi âm và gửi dữ liệu âm thanh đến server
     """
-    def __init__(self, use_websocket=True):
+    def __init__(self, use_websocket=True, use_vad_filter=True):
         """
         Khởi tạo audio client
         
         Args:
             use_websocket (bool): Sử dụng WebSocket cho kết nối thời gian thực
+            use_vad_filter (bool): Áp dụng lọc VAD và tần số
         """
         self.use_websocket = use_websocket
+        self.use_vad_filter = use_vad_filter
         self.running = False
         self.ws = None
         self.ws_connected = False
@@ -257,6 +268,124 @@ class AudioClient:
             self.processing_thread.join(timeout=1.0)  # Đợi tối đa 1 giây
         
         logger.info("Đã dừng ghi âm")
+    
+    def voice_activity_detection(self, audio_data, frame_duration=0.03, threshold=VAD_THRESHOLD):
+        """
+        Phát hiện các đoạn có hoạt động âm thanh (VAD)
+        
+        Args:
+            audio_data: Dữ liệu âm thanh
+            frame_duration: Độ dài mỗi khung (giây)
+            threshold: Ngưỡng năng lượng để xác định có hoạt động âm thanh
+            
+        Returns:
+            tuple: (có_hoạt_động, tỷ_lệ_khung_hoạt_động)
+        """
+        # Chuẩn hóa âm thanh để tính toán
+        normalized_data = audio_data.astype(np.float32) / (np.max(np.abs(audio_data)) + 1e-10)
+        
+        # Tính kích thước khung
+        frame_size = int(self.sample_rate * frame_duration)
+        num_frames = int(np.ceil(len(normalized_data) / frame_size))
+        
+        # Tạo mảng lưu mức năng lượng từng khung
+        frame_energy = np.zeros(num_frames)
+        
+        # Tính năng lượng cho từng khung
+        for i in range(num_frames):
+            start = i * frame_size
+            end = min(start + frame_size, len(normalized_data))
+            frame = normalized_data[start:end]
+            frame_energy[i] = np.mean(frame**2)
+        
+        # Áp dụng ngưỡng để xác định các khung có hoạt động âm thanh
+        vad_mask = frame_energy > threshold
+        vad_ratio = np.mean(vad_mask)
+        
+        # Có hoạt động âm thanh nếu tỷ lệ trên ngưỡng VAD
+        has_activity = vad_ratio > 0.2  # Ít nhất 20% khung có hoạt động
+        
+        return has_activity, vad_ratio
+    
+    def frequency_analysis(self, audio_data, freq_min=FREQ_MIN, freq_max=FREQ_MAX):
+        """
+        Phân tích tần số và xác định phần trăm năng lượng âm thanh trong dải tần số quan tâm
+        
+        Args:
+            audio_data: Dữ liệu âm thanh
+            freq_min: Tần số thấp nhất quan tâm (Hz)
+            freq_max: Tần số cao nhất quan tâm (Hz)
+            
+        Returns:
+            float: Phần trăm năng lượng âm thanh trong dải tần số quan tâm
+        """
+        # Chuẩn hóa âm thanh
+        normalized_data = audio_data.astype(np.float32) / (np.max(np.abs(audio_data)) + 1e-10)
+        
+        # Tính FFT
+        n = len(normalized_data)
+        yf = fft(normalized_data)
+        xf = fftfreq(n, 1 / self.sample_rate)
+        
+        # Lấy nửa đầu của FFT (tần số dương)
+        yf_abs = np.abs(yf[:n//2])
+        xf = xf[:n//2]
+        
+        # Tổng năng lượng
+        total_energy = np.sum(yf_abs**2)
+        
+        # Chỉ lọc trong dải tần số quan tâm
+        mask = (xf >= freq_min) & (xf <= freq_max)
+        target_energy = np.sum(yf_abs[mask]**2)
+        
+        # Tính phần trăm
+        if total_energy > 0:
+            percent = (target_energy / total_energy) * 100
+        else:
+            percent = 0
+            
+        return percent
+    
+    def should_send_audio(self, audio_data):
+        """
+        Kiểm tra xem đoạn âm thanh có nên được gửi đi không dựa trên VAD và phân tích tần số
+        
+        Args:
+            audio_data: Dữ liệu âm thanh
+            
+        Returns:
+            tuple: (nên_gửi, thông_tin_phân_tích)
+        """
+        if not self.use_vad_filter:
+            return True, {"vad_filtered": False, "reason": "VAD filter is disabled"}
+            
+        # Kiểm tra năng lượng tổng thể
+        energy = np.mean(np.abs(audio_data.astype(np.float32)))
+        if energy < ENERGY_THRESHOLD:
+            return False, {"vad_filtered": True, "reason": "Low energy", "energy": energy}
+        
+        # Kiểm tra VAD
+        has_activity, vad_ratio = self.voice_activity_detection(audio_data)
+        if not has_activity:
+            return False, {"vad_filtered": True, "reason": "No voice activity", "vad_ratio": vad_ratio}
+        
+        # Phân tích tần số
+        target_freq_energy = self.frequency_analysis(audio_data)
+        if target_freq_energy < TARGET_FREQ_THRESHOLD:
+            return False, {
+                "vad_filtered": True, 
+                "reason": "Low energy in target frequency range", 
+                "target_freq_energy": target_freq_energy
+            }
+        
+        # Nếu qua được tất cả các bộ lọc
+        return True, {
+            "vad_filtered": False,
+            "has_activity": has_activity,
+            "vad_ratio": vad_ratio,
+            "target_freq_energy": target_freq_energy,
+            "energy": energy
+        }
         
     def _process_audio(self):
         """
@@ -322,14 +451,22 @@ class AudioClient:
         string_timestamp, float_timestamp = get_timestamp()
         chunk_id = f"audio_{string_timestamp}"
         
-        # Gửi dữ liệu âm thanh đến server qua WebSocket hoặc REST API
-        if self.use_websocket and self.ws_connected:
-            self.send_audio_via_websocket(window_data, float_timestamp)
+        # Đầu tiên kiểm tra xem đoạn âm thanh này có nên được gửi đi không
+        should_send, analysis_info = self.should_send_audio(window_data)
+        
+        if should_send:
+            logger.info(f"Phát hiện âm thanh quan trọng (năng lượng tần số 250-750Hz: {analysis_info.get('target_freq_energy', 0):.1f}%). Gửi đi...")
+            
+            # Gửi dữ liệu âm thanh đến server qua WebSocket hoặc REST API
+            if self.use_websocket and self.ws_connected:
+                self.send_audio_via_websocket(window_data, float_timestamp)
+            else:
+                # Lưu thành file tạm và gửi qua REST API
+                filepath = os.path.join(TEMP_DIR, f"{chunk_id}.wav")
+                self.save_to_wav(window_data, filepath)
+                self.send_audio_to_server(filepath, float_timestamp)
         else:
-            # Lưu thành file tạm và gửi qua REST API
-            filepath = os.path.join(TEMP_DIR, f"{chunk_id}.wav")
-            self.save_to_wav(window_data, filepath)
-            self.send_audio_to_server(filepath, float_timestamp)
+            logger.debug(f"Bỏ qua chunk âm thanh (lý do: {analysis_info.get('reason')})")
     
     def get_audio_as_base64(self, audio_data):
         """
@@ -545,6 +682,13 @@ class AudioClient:
         if audio_path is None or audio_data is None:
             logger.error("Không thể ghi âm để gửi đến server")
             return False
+        
+        # Kiểm tra VAD và tần số nếu đã bật chế độ lọc
+        if self.use_vad_filter:
+            should_send, analysis_info = self.should_send_audio(audio_data)
+            if not should_send:
+                logger.info(f"Bỏ qua âm thanh đã thu (lý do: {analysis_info.get('reason')})")
+                return False
             
         # Gửi âm thanh đến server
         _, timestamp = get_timestamp()
@@ -558,16 +702,28 @@ class AudioClient:
 
 # Test module khi chạy trực tiếp
 if __name__ == "__main__":
+    # Parse command line arguments
+    import argparse
+    parser = argparse.ArgumentParser(description='Audio client cho hệ thống giám sát trẻ em')
+    parser.add_argument('--no-vad', action='store_true', help='Tắt tính năng lọc âm thanh VAD')
+    parser.add_argument('--no-ws', action='store_true', help='Chỉ sử dụng REST API (không WebSocket)')
+    args = parser.parse_args()
+
     # Khởi tạo client
-    audio_client = AudioClient(use_websocket=True)
+    audio_client = AudioClient(
+        use_websocket=not args.no_ws,
+        use_vad_filter=not args.no_vad
+    )
     
     # Bắt đầu client
     audio_client.start()
     
     try:
         # Cho WebSocket client chạy một lát
-        logger.info("Giữ kết nối và ghi âm trong 30 giây...")
-        time.sleep(30)
+        logger.info("Giữ kết nối và ghi âm trong 60 giây...")
+        logger.info(f"Chế độ lọc VAD: {'Tắt' if args.no_vad else 'Bật'}")
+        logger.info(f"Chế độ WebSocket: {'Tắt' if args.no_ws else 'Bật'}")
+        time.sleep(60)
         
         # Thử nghiệm ghi âm trực tiếp và gửi
         logger.info("Thử nghiệm ghi âm trực tiếp và gửi...")

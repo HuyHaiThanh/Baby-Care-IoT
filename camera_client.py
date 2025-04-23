@@ -1,5 +1,5 @@
 # File: camera_client.py
-# Module chụp ảnh và gửi đến server xử lý hình ảnh
+# Module xử lý chụp ảnh và gửi hình ảnh đến server
 
 import os
 import time
@@ -7,16 +7,14 @@ import datetime
 import threading
 import subprocess
 import re
-import requests
-import logging
-import json
 import base64
-from io import BytesIO
+import json
 import websocket
-from PIL import Image
+import requests
+from io import BytesIO
 from config import (
     PHOTO_DIR, TEMP_DIR, DEVICE_ID, IMAGE_API_ENDPOINT, 
-    IMAGE_WS_ENDPOINT, RECONNECT_INTERVAL
+    IMAGE_WS_ENDPOINT, PHOTO_INTERVAL, RECONNECT_INTERVAL
 )
 from utils import get_timestamp, make_api_request, logger
 
@@ -24,28 +22,38 @@ from utils import get_timestamp, make_api_request, logger
 PICAMERA_AVAILABLE = False
 
 try:
+    from PIL import Image
+    logger.info("Đã phát hiện thư viện PIL")
+except ImportError:
+    logger.warning("CẢNH BÁO: Không tìm thấy thư viện PIL. Chức năng xử lý ảnh sẽ bị hạn chế.")
+
+try:
     from picamera import PiCamera
     PICAMERA_AVAILABLE = True
     logger.info("Đã phát hiện PiCamera.")
 except ImportError:
-    logger.info("Không tìm thấy PiCamera. Sẽ sử dụng USB camera nếu có.")
+    logger.warning("Không tìm thấy PiCamera. Sẽ sử dụng USB camera nếu có.")
+
 
 class CameraClient:
     """
-    Client xử lý camera và gửi hình ảnh đến server
+    Client xử lý chụp ảnh và gửi hình ảnh đến server
     """
-    def __init__(self, use_websocket=True):
+    def __init__(self, use_websocket=True, interval=PHOTO_INTERVAL):
         """
         Khởi tạo camera client
         
         Args:
             use_websocket (bool): Sử dụng WebSocket cho kết nối thời gian thực
+            interval (int): Khoảng thời gian giữa các lần chụp ảnh (giây)
         """
         self.use_websocket = use_websocket
+        self.interval = interval
         self.running = False
         self.ws = None
         self.ws_connected = False
         self.ws_thread = None
+        self.photo_thread = None
         
         # Tạo các thư mục cần thiết
         os.makedirs(PHOTO_DIR, exist_ok=True)
@@ -63,6 +71,11 @@ class CameraClient:
             self.ws_thread.daemon = True
             self.ws_thread.start()
             
+        # Khởi động thread chụp ảnh định kỳ
+        self.photo_thread = threading.Thread(target=self._photo_thread)
+        self.photo_thread.daemon = True
+        self.photo_thread.start()
+            
         logger.info("Camera client đã khởi động")
         return True
         
@@ -77,6 +90,10 @@ class CameraClient:
             self.ws.close()
             self.ws_connected = False
             
+        # Đợi thread xử lý kết thúc
+        if self.photo_thread and self.photo_thread.is_alive():
+            self.photo_thread.join(timeout=1.0)  # Đợi tối đa 1 giây
+            
         logger.info("Camera client đã dừng")
         
     def _websocket_thread(self):
@@ -88,22 +105,13 @@ class CameraClient:
                 data = json.loads(message)
                 msg_type = data.get('type')
                 
-                if msg_type == 'request_image':
-                    # Server yêu cầu ảnh mới
-                    logger.info("Nhận yêu cầu chụp ảnh từ server hình ảnh")
-                    self.capture_and_send_photo()
-                elif msg_type == 'detection':
-                    # Server gửi về kết quả phát hiện
-                    objects = data.get('objects', [])
-                    logger.info(f"Server phát hiện {len(objects)} đối tượng trong ảnh")
-                    for obj in objects:
-                        confidence = obj.get('confidence', 0)
-                        class_name = obj.get('class', '')
-                        logger.info(f"- {class_name} (độ tin cậy: {confidence:.2f})")
-                elif msg_type == 'alert':
-                    # Server gửi cảnh báo
-                    msg = data.get('message', '')
-                    logger.warning(f"⚠️ CẢNH BÁO từ server hình ảnh: {msg}")
+                if msg_type == 'request':
+                    # Server yêu cầu hình ảnh mới
+                    logger.info("Nhận yêu cầu chụp ảnh từ server")
+                    
+                    # Chụp ảnh mới và gửi qua WebSocket
+                    threading.Thread(target=self.capture_and_send_photo).start()
+                    
                 elif msg_type == 'error':
                     # Thông báo lỗi
                     msg = data.get('message', '')
@@ -111,6 +119,7 @@ class CameraClient:
                     logger.error(f"Lỗi từ server hình ảnh: {msg}")
                     if details:
                         logger.error(f"Chi tiết: {details}")
+            
             except json.JSONDecodeError:
                 logger.error(f"Không thể giải mã thông điệp WebSocket: {message}")
             except Exception as e:
@@ -168,11 +177,24 @@ class CameraClient:
             if not self.ws_connected:
                 _connect_websocket()
             time.sleep(1)
-
+    
+    def _photo_thread(self):
+        """
+        Thread chụp ảnh theo khoảng thời gian định kỳ và gửi đến server
+        """
+        while self.running:
+            try:
+                # Chụp ảnh và gửi đến server
+                self.capture_and_send_photo()
+                
+                # Đợi đến lần chụp tiếp theo
+                time.sleep(self.interval)
+            except Exception as e:
+                logger.error(f"Lỗi trong thread chụp ảnh: {e}")
+                time.sleep(self.interval)
+    
     def detect_video_devices(self):
-        """
-        Phát hiện và trả về thông tin các thiết bị camera USB
-        """
+        """Phát hiện và trả về thông tin các thiết bị camera USB"""
         try:
             # Sử dụng lệnh v4l2-ctl để liệt kê các thiết bị video
             proc = subprocess.run(['v4l2-ctl', '--list-devices'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -218,11 +240,9 @@ class CameraClient:
         except Exception as e:
             logger.error(f"Lỗi khi phát hiện thiết bị camera: {e}")
             return []
-
+    
     def get_best_video_device(self):
-        """
-        Chọn thiết bị camera phù hợp nhất
-        """
+        """Chọn thiết bị camera phù hợp nhất"""
         devices = self.detect_video_devices()
         
         if not devices:
@@ -230,8 +250,7 @@ class CameraClient:
             
         # Ưu tiên USB camera thường có từ camera, webcam, usb trong tên
         for device in devices:
-            name = device.get('name', '').lower()
-            if 'camera' in name or 'webcam' in name or 'usb' in name:
+            if 'camera' in device.get('name', '').lower() or 'webcam' in device.get('name', '').lower() or 'usb' in device.get('name', '').lower():
                 return device
         
         # Nếu không tìm thấy, chọn thiết bị đầu tiên
@@ -239,11 +258,9 @@ class CameraClient:
             return devices[0]
             
         return None
-
+    
     def capture_with_fswebcam(self, output_path):
-        """
-        Chụp ảnh bằng fswebcam (cho USB camera)
-        """
+        """Chụp ảnh bằng fswebcam (cho USB camera)"""
         try:
             # Tìm thiết bị camera
             device = self.get_best_video_device()
@@ -254,6 +271,9 @@ class CameraClient:
             # Dùng fswebcam để chụp ảnh
             device_path = device['device']
             logger.info(f"Bắt đầu chụp ảnh từ thiết bị {device_path}...")
+            
+            # Đảm bảo thư mục tạm tồn tại
+            os.makedirs(TEMP_DIR, exist_ok=True)
             
             # Đường dẫn đến file tạm
             temp_path = os.path.join(TEMP_DIR, "temp_capture.jpg")
@@ -293,11 +313,9 @@ class CameraClient:
             if 'temp_path' in locals() and os.path.exists(temp_path):
                 os.remove(temp_path)
             return None
-
+    
     def capture_with_libcamera(self, output_path):
-        """
-        Chụp ảnh bằng libcamera-still (cho Pi Camera)
-        """
+        """Chụp ảnh bằng libcamera-still (cho Pi Camera)"""
         try:
             # Đảm bảo thư mục tồn tại
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -328,11 +346,9 @@ class CameraClient:
         except Exception as e:
             logger.error(f"Lỗi khi chụp ảnh với libcamera: {e}")
             return None
-
+    
     def capture_with_picamera(self, output_path):
-        """
-        Chụp ảnh bằng module PiCamera
-        """
+        """Chụp ảnh bằng module PiCamera"""
         try:
             # Đảm bảo thư mục tồn tại
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -355,7 +371,7 @@ class CameraClient:
         except Exception as e:
             logger.error(f"Lỗi khi chụp ảnh với PiCamera: {e}")
             return None
-
+    
     def capture_photo(self):
         """
         Chụp ảnh từ camera và lưu vào thư mục chỉ định
@@ -363,6 +379,9 @@ class CameraClient:
         Returns:
             str: Đường dẫn đến file ảnh đã chụp, hoặc None nếu thất bại
         """
+        # Tạo thư mục nếu chưa tồn tại
+        os.makedirs(PHOTO_DIR, exist_ok=True)
+        
         # Tạo tên file với timestamp
         string_timestamp, _ = get_timestamp()
         filename = f"photo_{string_timestamp}.jpg"
@@ -388,36 +407,129 @@ class CameraClient:
             
         logger.error("Không thể chụp ảnh: Không tìm thấy thiết bị camera hỗ trợ")
         return None
-        
-    def send_photo_to_server(self, photo_path):
+    
+    def get_image_as_base64(self, image_path, quality="high"):
         """
-        Gửi ảnh đến server để xử lý
+        Chuyển đổi hình ảnh thành chuỗi base64 với chất lượng tùy chỉnh
         
         Args:
-            photo_path (str): Đường dẫn đến file ảnh
+            image_path (str): Đường dẫn đến file hình ảnh
+            quality (str): Chất lượng hình ảnh ("high", "medium", "low")
+            
+        Returns:
+            str: Chuỗi base64 của dữ liệu hình ảnh
+        """
+        try:
+            from PIL import Image
+            import io
+            
+            # Mở ảnh và nén theo chất lượng
+            with Image.open(image_path) as img:
+                # Điều chỉnh chất lượng và kích thước theo yêu cầu
+                if quality == "medium":
+                    # Giảm kích thước xuống 50% và nén với chất lượng 70%
+                    new_size = (img.width // 2, img.height // 2)
+                    img = img.resize(new_size, Image.Resampling.LANCZOS)
+                    compress_quality = 70
+                elif quality == "low":
+                    # Giảm kích thước xuống 30% và nén với chất lượng 50%
+                    new_size = (img.width // 3, img.height // 3)
+                    img = img.resize(new_size, Image.Resampling.LANCZOS)
+                    compress_quality = 50
+                else:
+                    # Chất lượng cao - giữ nguyên kích thước, nén nhẹ
+                    compress_quality = 85
+                
+                # Lưu ảnh vào buffer với định dạng JPEG và nén
+                buffer = io.BytesIO()
+                img.convert('RGB').save(buffer, format="JPEG", quality=compress_quality)
+                image_data = buffer.getvalue()
+                
+                # Mã hóa thành base64
+                base64_image = base64.b64encode(image_data).decode('utf-8')
+                return base64_image
+                
+        except Exception as e:
+            logger.error(f"Lỗi khi chuyển đổi hình ảnh sang base64: {e}")
+            
+            # Nếu không có PIL, đọc file trực tiếp
+            try:
+                with open(image_path, "rb") as image_file:
+                    return base64.b64encode(image_file.read()).decode('utf-8')
+            except Exception as e2:
+                logger.error(f"Lỗi khi đọc file hình ảnh: {e2}")
+                return None
+    
+    def send_image_via_websocket(self, image_path, timestamp, quality="high"):
+        """
+        Gửi hình ảnh qua WebSocket theo định dạng yêu cầu của server
+        
+        Args:
+            image_path (str): Đường dẫn đến file hình ảnh
+            timestamp (float): Thời gian chụp ảnh
+            quality (str): Chất lượng hình ảnh ("high", "medium", "low")
             
         Returns:
             bool: True nếu gửi thành công, False nếu không
         """
-        if not os.path.exists(photo_path):
-            logger.error(f"Không tìm thấy file ảnh: {photo_path}")
+        if not self.ws_connected:
+            logger.warning("Không có kết nối WebSocket, không thể gửi hình ảnh")
+            return False
+        
+        try:
+            # Chuyển đổi hình ảnh thành base64
+            image_base64 = self.get_image_as_base64(image_path, quality)
+            if not image_base64:
+                return False
+                
+            # Tạo message theo định dạng yêu cầu của server
+            message = {
+                'type': 'image',
+                'timestamp': timestamp,
+                'device_id': DEVICE_ID,
+                'quality': quality,
+                'image_data': image_base64
+            }
+            
+            # Gửi qua WebSocket
+            self.ws.send(json.dumps(message))
+            logger.info(f"Đã gửi hình ảnh qua WebSocket lúc {timestamp} (chất lượng: {quality})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Lỗi khi gửi hình ảnh qua WebSocket: {e}")
+            return False
+    
+    def send_image_to_server(self, image_path, timestamp, quality="high"):
+        """
+        Gửi hình ảnh đến server qua REST API
+        
+        Args:
+            image_path (str): Đường dẫn đến file hình ảnh
+            timestamp (float): Thời gian chụp ảnh
+            quality (str): Chất lượng hình ảnh ("high", "medium", "low")
+            
+        Returns:
+            bool: True nếu gửi thành công, False nếu không
+        """
+        if not os.path.exists(image_path):
+            logger.error(f"Không tìm thấy file hình ảnh: {image_path}")
             return False
             
         try:
-            # Gửi ảnh qua REST API
-            with open(photo_path, 'rb') as image_file:
-                _, timestamp = get_timestamp()
-                
+            # Gửi file qua REST API
+            with open(image_path, 'rb') as image_file:
                 files = {
-                    'image': (os.path.basename(photo_path), image_file, 'image/jpeg')
+                    'image': (os.path.basename(image_path), image_file, 'image/jpeg')
                 }
                 
                 data = {
                     'timestamp': timestamp,
-                    'device_id': DEVICE_ID
+                    'device_id': DEVICE_ID,
+                    'quality': quality
                 }
                 
-                logger.info(f"Đang gửi ảnh đến server: {os.path.basename(photo_path)}")
+                logger.info(f"Đang gửi hình ảnh đến server: {os.path.basename(image_path)}")
                 success, response = make_api_request(
                     url=IMAGE_API_ENDPOINT,
                     method='POST',
@@ -426,100 +538,55 @@ class CameraClient:
                 )
                 
                 if success:
-                    logger.info(f"Đã gửi ảnh thành công: {os.path.basename(photo_path)}")
+                    logger.info(f"Đã gửi hình ảnh thành công")
                     return True
                 else:
-                    logger.error(f"Lỗi khi gửi ảnh: {response}")
+                    logger.error(f"Lỗi khi gửi hình ảnh: {response}")
                     return False
                     
         except Exception as e:
-            logger.error(f"Lỗi khi gửi ảnh đến server: {e}")
+            logger.error(f"Lỗi khi gửi hình ảnh đến server: {e}")
             return False
-            
-    def send_photo_via_websocket(self, photo_path):
-        """
-        Gửi ảnh qua kết nối WebSocket
-        
-        Args:
-            photo_path (str): Đường dẫn đến file ảnh
-            
-        Returns:
-            bool: True nếu gửi thành công, False nếu không
-        """
-        if not self.ws_connected:
-            logger.warning("Không có kết nối WebSocket, không thể gửi ảnh")
-            return False
-            
-        try:
-            # Đọc ảnh và chuyển đổi sang base64
-            with open(photo_path, 'rb') as image_file:
-                # Đọc và mã hóa ảnh thành base64
-                image_data = image_file.read()
-                encoded_image = base64.b64encode(image_data).decode('utf-8')
-                
-                # Gửi qua WebSocket
-                _, timestamp = get_timestamp()
-                message = {
-                    'type': 'image',
-                    'timestamp': timestamp,
-                    'device_id': DEVICE_ID,
-                    'filename': os.path.basename(photo_path),
-                    'image_data': encoded_image
-                }
-                
-                self.ws.send(json.dumps(message))
-                logger.info(f"Đã gửi ảnh qua WebSocket: {os.path.basename(photo_path)}")
-                return True
-                
-        except Exception as e:
-            logger.error(f"Lỗi khi gửi ảnh qua WebSocket: {e}")
-            return False
-        
-    def capture_and_send_photo(self):
+    
+    def capture_and_send_photo(self, quality="high"):
         """
         Chụp ảnh và gửi đến server
         
+        Args:
+            quality (str): Chất lượng hình ảnh ("high", "medium", "low")
+            
         Returns:
             bool: True nếu thành công, False nếu không
         """
         # Chụp ảnh
-        photo_path = self.capture_photo()
+        image_path = self.capture_photo()
         
-        if not photo_path:
+        if not image_path:
             logger.error("Không thể chụp ảnh để gửi đến server")
             return False
             
-        # Gửi ảnh đến server
+        # Gửi hình ảnh đến server
+        _, timestamp = get_timestamp()
         if self.use_websocket and self.ws_connected:
             # Ưu tiên gửi qua WebSocket nếu có kết nối
-            return self.send_photo_via_websocket(photo_path)
+            return self.send_image_via_websocket(image_path, timestamp, quality)
         else:
             # Nếu không có kết nối WebSocket, gửi qua REST API
-            return self.send_photo_to_server(photo_path)
+            return self.send_image_to_server(image_path, timestamp, quality)
 
 
 # Test module khi chạy trực tiếp
 if __name__ == "__main__":
     # Khởi tạo client
-    camera_client = CameraClient(use_websocket=True)
+    camera_client = CameraClient(use_websocket=True, interval=10)  # Chụp ảnh mỗi 10 giây
     
     # Bắt đầu client
     camera_client.start()
     
     try:
-        # Thử chụp và gửi một số ảnh
-        for i in range(3):
-            logger.info(f"Thử nghiệm lần {i+1}/3")
-            success = camera_client.capture_and_send_photo()
-            if success:
-                logger.info("✓ Thành công")
-            else:
-                logger.error("✗ Thất bại")
-            time.sleep(2)
-            
         # Cho WebSocket client chạy một lát
-        logger.info("Giữ kết nối WebSocket trong 10 giây...")
-        time.sleep(10)
+        logger.info("Giữ kết nối và chụp ảnh trong 60 giây...")
+        time.sleep(60)
         
     except KeyboardInterrupt:
         logger.info("Đã nhận tín hiệu dừng")

@@ -1,13 +1,12 @@
 # File: utils.py
-# Các hàm tiện ích cho client Pi
+# Module chứa các tiện ích và hàm trợ giúp
 
 import os
 import time
-import socket
-import logging
 import datetime
-import json
+import logging
 import requests
+import json
 import netifaces
 from config import DEVICE_NAME, DEVICE_ID, CONNECTION_TIMEOUT, MAX_RETRIES, RETRY_DELAY
 
@@ -17,6 +16,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+
 logger = logging.getLogger('pi-client')
 
 def get_ip_addresses():
@@ -57,56 +57,51 @@ def get_ip_addresses():
         
     return ip_list
 
-def make_api_request(url, method='POST', data=None, files=None, json_data=None):
-    """
-    Gửi yêu cầu API đến server với cơ chế thử lại
-    
-    Args:
-        url (str): URL của API endpoint
-        method (str): Phương thức HTTP (GET, POST)
-        data (dict): Dữ liệu form
-        files (dict): Các file cần gửi
-        json_data (dict): Dữ liệu JSON
-        
-    Returns:
-        tuple: (Thành công (bool), Phản hồi (Response hoặc Exception))
-    """
-    headers = {
-        'X-Device-ID': DEVICE_ID,
-        'X-Device-Name': DEVICE_NAME
+def get_device_info():
+    """Lấy thông tin về thiết bị Raspberry Pi"""
+    device_info = {
+        "device_id": DEVICE_ID,
+        "system_info": {}
     }
     
-    for attempt in range(MAX_RETRIES):
+    try:
+        # Lấy thông tin về CPU
+        with open('/proc/cpuinfo', 'r') as f:
+            cpu_info = f.read()
+            
+            # Tìm model của Raspberry Pi
+            for line in cpu_info.splitlines():
+                if 'Model' in line:
+                    device_info['system_info']['model'] = line.split(':')[1].strip()
+                    break
+            
+        # Lấy thông tin RAM
         try:
-            response = requests.request(
-                method=method.upper(),
-                url=url,
-                data=data,
-                files=files,
-                json=json_data,
-                headers=headers,
-                timeout=CONNECTION_TIMEOUT
-            )
+            with open('/proc/meminfo', 'r') as f:
+                mem_info = f.read()
+                for line in mem_info.splitlines():
+                    if 'MemTotal' in line:
+                        mem_total = line.split(':')[1].strip()
+                        device_info['system_info']['memory'] = mem_total
+                        break
+        except:
+            pass
             
-            # Kiểm tra xem request có thành công hay không
-            response.raise_for_status()
+        # Lấy nhiệt độ CPU nếu có thể
+        try:
+            temp = os.popen("vcgencmd measure_temp").readline()
+            device_info['system_info']['temperature'] = temp.replace("temp=", "").strip()
+        except:
+            pass
             
-            # Trả về kết quả nếu thành công
-            return True, response
-            
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Lỗi yêu cầu API lần {attempt + 1}/{MAX_RETRIES}: {e}")
-            
-            # Chờ trước khi thử lại, trừ lần thử cuối cùng
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(RETRY_DELAY)
+    except Exception as e:
+        logger.warning(f"Không thể lấy thông tin thiết bị: {e}")
     
-    # Đã hết số lần thử
-    return False, Exception(f"Không thể kết nối đến {url} sau {MAX_RETRIES} lần thử")
+    return device_info
 
 def get_timestamp():
     """
-    Lấy timestamp hiện tại dưới dạng chuỗi và số
+    Lấy timestamp hiện tại dưới dạng chuỗi và float
     
     Returns:
         tuple: (string_timestamp, float_timestamp)
@@ -115,6 +110,68 @@ def get_timestamp():
     string_timestamp = now.strftime("%Y%m%d_%H%M%S")
     float_timestamp = time.time()
     return string_timestamp, float_timestamp
+
+def make_api_request(url, method='GET', data=None, files=None, headers=None, json_data=None):
+    """
+    Thực hiện yêu cầu API với xử lý retry và lỗi
+    
+    Args:
+        url (str): URL API endpoint
+        method (str): Phương thức HTTP ('GET', 'POST', etc.)
+        data (dict): Dữ liệu form để gửi đi
+        files (dict): Các file cần upload
+        headers (dict): Headers HTTP tùy chỉnh
+        json_data (dict): Dữ liệu JSON để gửi đi
+        
+    Returns:
+        tuple: (success, response_or_error)
+            - success: True nếu yêu cầu thành công, False nếu không
+            - response_or_error: Dữ liệu JSON phản hồi hoặc thông báo lỗi
+    """
+    if headers is None:
+        headers = {}
+    
+    retry_count = 0
+    while retry_count < MAX_RETRIES:
+        try:
+            # Thêm thông tin thiết bị vào headers
+            headers['X-Device-ID'] = DEVICE_ID
+            
+            # Thực hiện yêu cầu HTTP
+            response = requests.request(
+                method=method,
+                url=url,
+                data=data,
+                json=json_data,
+                files=files,
+                headers=headers,
+                timeout=CONNECTION_TIMEOUT
+            )
+            
+            # Kiểm tra trạng thái phản hồi
+            response.raise_for_status()
+            
+            # Phân tích phản hồi JSON nếu có
+            try:
+                return True, response.json()
+            except ValueError:
+                # Không phải JSON, trả về text
+                return True, response.text
+                
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Lỗi kết nối tới {url}: {e}"
+            logger.error(error_msg)
+            
+            # Đợi một lát trước khi thử lại
+            retry_count += 1
+            if retry_count < MAX_RETRIES:
+                logger.info(f"Đang thử lại lần {retry_count}/{MAX_RETRIES} sau {RETRY_DELAY} giây...")
+                time.sleep(RETRY_DELAY)
+            else:
+                logger.error(f"Đã thử lại {MAX_RETRIES} lần nhưng không thành công")
+                return False, f"Lỗi sau {MAX_RETRIES} lần thử: {e}"
+    
+    return False, f"Không thể kết nối đến server sau {MAX_RETRIES} lần thử"
 
 def check_server_status(url):
     """
@@ -131,3 +188,17 @@ def check_server_status(url):
         return response.status_code == 200
     except:
         return False
+
+# Test module nếu chạy trực tiếp
+if __name__ == "__main__":
+    print("Kiểm tra module utils...")
+    
+    # Test lấy timestamp
+    string_ts, float_ts = get_timestamp()
+    print(f"Timestamp hiện tại: {string_ts} ({float_ts})")
+    
+    # Test lấy thông tin thiết bị
+    device_info = get_device_info()
+    print(f"Thông tin thiết bị: {json.dumps(device_info, indent=2)}")
+    
+    print("Hoàn tất kiểm tra module utils")
