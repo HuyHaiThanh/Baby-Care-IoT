@@ -38,16 +38,20 @@ class CameraClient:
     """
     Client for capturing and sending images to the server
     """
-    def __init__(self, interval=1):
+    def __init__(self, interval=1, max_queue_size=5):
         """
         Initialize camera client
         
         Args:
             interval (int): Time interval between image captures (seconds)
+            max_queue_size (int): Maximum number of images in the queue (default 5)
         """
         self.interval = interval
         self.running = False
         self.photo_thread = None
+        self.max_queue_size = max_queue_size
+        self.image_queue = queue.Queue(maxsize=max_queue_size)
+        self.dropped_images_count = 0
         
         # Image statistics
         self.sent_success_count = 0
@@ -537,32 +541,94 @@ class CameraClient:
         
         # Increment photo count
         self.total_photos_taken += 1
-            
-        # Send image to server
+        
+        # Tạo timestamp
         timestamp = time.time()
         
-        # Update status and start send timing
-        self.processing_status = "Sending image..."
-        send_start_time = time.time()
-        
-        # Send via WebSocket
-        success = self.send_image_via_websocket(image_path, timestamp)
-        
-        # Measure sending time
-        self.sending_duration = time.time() - send_start_time
-        self.last_sent_time = time.time()
+        try:
+            # Kiểm tra nếu hàng đợi đã đầy, xóa ảnh cũ nhất để có chỗ cho ảnh mới
+            if self.image_queue.full():
+                try:
+                    # Lấy và loại bỏ ảnh cũ nhất
+                    oldest_image_path, _ = self.image_queue.get(block=False)
+                    self.image_queue.task_done()
+                    logger.warning(f"Image queue full: Removed oldest image to make room for new one: {os.path.basename(oldest_image_path)}")
+                except queue.Empty:
+                    # Trường hợp hiếm khi xảy ra - queue vừa đầy vừa trống
+                    pass
+                
+            # Thêm ảnh mới vào hàng đợi
+            self.image_queue.put((image_path, timestamp), block=False)
             
-        # Update success/failure count and status
-        if success:
-            self.sent_success_count += 1
-            self.processing_status = "Sent successfully"
-            # Update next capture time
+            # Bắt đầu một thread mới để gửi ảnh từ hàng đợi
+            send_thread = threading.Thread(target=self._send_queue_images)
+            send_thread.daemon = True
+            send_thread.start()
+            
+            self.processing_status = "Image queued for sending"
             self.next_photo_time = time.time() + self.interval
-        else:
-            self.sent_fail_count += 1
-            self.processing_status = "Send error"
+            return True
             
-        return success
+        except queue.Full:
+            # Xử lý trường hợp hiếm gặp khi không thể thêm vào queue dù đã xóa mục cũ
+            self.dropped_images_count += 1
+            logger.warning(f"Queue still full after removal: Dropping image: {self.current_photo_file}. Total dropped: {self.dropped_images_count}")
+            self.processing_status = "Queue still full, image dropped"
+            return False
+        except Exception as e:
+            logger.error(f"Error while handling image queue: {e}")
+            self.processing_status = f"Queue error: {e}"
+            return False
+
+    def _send_queue_images(self):
+        """
+        Send images from queue via WebSocket
+        """
+        try:
+            if not self.ws_client.ws_connected:
+                logger.warning("No WebSocket connection, cannot send image")
+                return
+                
+            while not self.image_queue.empty():
+                try:
+                    # Lấy ảnh từ hàng đợi với timeout để tránh blocking quá lâu
+                    image_path, timestamp = self.image_queue.get(timeout=0.5)
+                    
+                    # Update status and start send timing
+                    self.processing_status = f"Sending image: {os.path.basename(image_path)}..."
+                    send_start_time = time.time()
+                    
+                    # Send via WebSocket
+                    success = self.send_image_via_websocket(image_path, timestamp)
+                    
+                    # Measure sending time
+                    self.sending_duration = time.time() - send_start_time
+                    self.last_sent_time = time.time()
+                    
+                    # Update counts based on success/failure
+                    if success:
+                        self.sent_success_count += 1
+                        self.processing_status = "Sent successfully"
+                    else:
+                        self.sent_fail_count += 1
+                        self.processing_status = "Send error"
+                    
+                    # Mark task as complete
+                    self.image_queue.task_done()
+                    
+                except queue.Empty:
+                    break
+                except Exception as e:
+                    logger.error(f"Error sending image from queue: {e}")
+                    self.processing_status = f"Queue send error: {e}"
+                    # Mark task as complete even if there was an error
+                    try:
+                        self.image_queue.task_done()
+                    except:
+                        pass
+                    
+        except Exception as e:
+            logger.error(f"Error in image sending thread: {e}")
 
     @property
     def ws_connected(self):

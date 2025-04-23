@@ -26,7 +26,8 @@ class AudioRecorder:
     meaning there is a 2-second overlap between consecutive chunks.
     """
     def __init__(self, chunk_size=1024, sample_rate=SAMPLE_RATE, channels=CHANNELS, 
-                 window_size=AUDIO_DURATION, slide_size=AUDIO_SLIDE_SIZE, format=pyaudio.paInt16):
+                 window_size=AUDIO_DURATION, slide_size=AUDIO_SLIDE_SIZE, format=pyaudio.paInt16,
+                 max_queue_size=10):
         """
         Initialize the AudioRecorder with the specified parameters.
         
@@ -37,6 +38,7 @@ class AudioRecorder:
             window_size (int): Size of each audio segment in seconds (default 3)
             slide_size (int): How much the window slides each time in seconds (default 1)
             format: PyAudio format constant
+            max_queue_size (int): Maximum number of audio chunks in the queue (default 10)
         """
         self.chunk_size = chunk_size
         self.sample_rate = sample_rate
@@ -44,6 +46,7 @@ class AudioRecorder:
         self.format = format
         self.window_size = window_size
         self.slide_size = slide_size
+        self.max_queue_size = max_queue_size
         
         # WebSocket URL
         ws_url = f"{AUDIO_WS_ENDPOINT}/{DEVICE_ID}"
@@ -56,9 +59,10 @@ class AudioRecorder:
         self.buffer_lock = threading.Lock()
         self.frames_per_window = int(sample_rate * window_size)
         self.frames_per_slide = int(sample_rate * slide_size)
-        self.chunk_queue = queue.Queue()
+        self.chunk_queue = queue.Queue(maxsize=max_queue_size)
         self.save_counter = 0
         self.processing_thread = None
+        self.dropped_chunks_count = 0
         
         # Create WebSocket client
         self.ws_client = WebSocketClient(
@@ -162,19 +166,38 @@ class AudioRecorder:
         Args:
             window_data (numpy.ndarray): Audio data for the current window (3 seconds)
         """
-        self.chunk_queue.put(window_data)
-        chunk_id = f"audio_chunk_{self.save_counter}"
-        
-        # Send to WebSocket if connected
-        if self.ws_client.ws_connected:
-            ws_send_thread = threading.Thread(
-                target=self.send_to_websocket,
-                args=(window_data, chunk_id)
-            )
-            ws_send_thread.daemon = True
-            ws_send_thread.start()
-        
-        self.save_counter += 1
+        try:
+            # Kiểm tra nếu hàng đợi đã đầy, xóa mục cũ nhất
+            if self.chunk_queue.full():
+                try:
+                    # Lấy và loại bỏ mục cũ nhất
+                    oldest_chunk = self.chunk_queue.get(block=False)
+                    self.chunk_queue.task_done()
+                    logger.warning("Queue full: Removed oldest audio chunk to make room for new one")
+                except queue.Empty:
+                    # Trường hợp hiếm khi xảy ra - queue vừa đầy vừa trống
+                    pass
+            
+            # Thêm mục mới vào hàng đợi
+            self.chunk_queue.put(window_data, block=False)
+            chunk_id = f"audio_chunk_{self.save_counter}"
+            
+            # Send to WebSocket if connected
+            if self.ws_client.ws_connected:
+                ws_send_thread = threading.Thread(
+                    target=self.send_to_websocket,
+                    args=(window_data, chunk_id)
+                )
+                ws_send_thread.daemon = True
+                ws_send_thread.start()
+            
+            self.save_counter += 1
+        except queue.Full:
+            # Xử lý trường hợp hiếm gặp khi không thể thêm vào queue dù đã xóa mục cũ
+            self.dropped_chunks_count += 1
+            logger.warning(f"Queue still full after removal: Dropping audio chunk. Total dropped: {self.dropped_chunks_count}")
+        except Exception as e:
+            logger.error(f"Error processing audio window: {e}")
     
     def send_to_websocket(self, audio_data, chunk_id):
         """
