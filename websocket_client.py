@@ -30,6 +30,12 @@ class WebSocketClient:
         self.reconnect_interval = 5  # Seconds between reconnection attempts
         self.message_callback = None
         
+        # Add parameters for exponential backoff
+        self.max_reconnect_interval = 60  # Maximum seconds between reconnection attempts
+        self.current_reconnect_interval = self.reconnect_interval  # Current interval, will increase with failures
+        self.reconnect_attempt = 0
+        self.max_reconnect_attempts = 10  # Maximum number of consecutive reconnection attempts
+        
         logger.info(f"Initialized {client_type} WebSocket client with URL: {ws_url}")
     
     def set_message_callback(self, callback):
@@ -90,11 +96,9 @@ class WebSocketClient:
         self.ws_connected = False
         self.last_ws_status = "Disconnected"
 
-        # Try to reconnect if client is still running
-        if self.running:
-            logger.info(f"Attempting to reconnect {self.client_type} WebSocket in {self.reconnect_interval} seconds...")
-            time.sleep(self.reconnect_interval)
-            self._connect_websocket()
+        # Connection will be handled by the main _websocket_thread loop
+        # No need to directly attempt reconnection here as it creates duplicate attempts
+        logger.info(f"{self.client_type} WebSocket connection closed. Reconnection will be handled by main thread.")
 
     def _on_ws_open(self, ws):
         """
@@ -142,8 +146,8 @@ class WebSocketClient:
                 
             logger.info(f"Connecting to {self.client_type} WebSocket at {self.ws_url}")
             
-            # Enable more verbose logging for debugging
-            websocket.enableTrace(True)
+            # Reduce verbosity of websocket logging in production
+            websocket.enableTrace(False)
             
             self.ws = websocket.WebSocketApp(
                 self.ws_url,
@@ -158,11 +162,15 @@ class WebSocketClient:
             ws_thread.daemon = True
             ws_thread.start()
             
+            # Give a short time for the connection to establish
+            time.sleep(1)
+            
         except Exception as e:
             logger.error(f"Error connecting to {self.client_type} WebSocket: {e}")
             logger.error(traceback.format_exc())
             self.ws_connected = False
-            time.sleep(self.reconnect_interval)
+            # Don't sleep here, let _websocket_thread handle the timing
+            # and attempt counting for reconnection attempts
     
     def _run_websocket(self):
         """
@@ -183,12 +191,41 @@ class WebSocketClient:
         while self.running:
             try:
                 if not self.ws_connected:
-                    self._connect_websocket()
-                time.sleep(1)
+                    # Check if we've reached the maximum number of reconnection attempts
+                    if self.reconnect_attempt >= self.max_reconnect_attempts:
+                        logger.warning(f"Reached maximum reconnection attempts ({self.max_reconnect_attempts}) for {self.client_type} WebSocket. Stopping reconnection attempts.")
+                        # Reset attempt counter but wait for long interval before trying again
+                        self.reconnect_attempt = 0
+                        time.sleep(self.max_reconnect_interval * 2)
+                    else:
+                        # Try to connect
+                        self._connect_websocket()
+                        
+                        # If we're still not connected after the attempt, increase the attempt counter
+                        # and wait for the current reconnect interval before the next attempt
+                        if not self.ws_connected:
+                            self.reconnect_attempt += 1
+                            logger.info(f"Connection attempt {self.reconnect_attempt}/{self.max_reconnect_attempts} failed. " +
+                                      f"Next attempt in {self.current_reconnect_interval} seconds.")
+                            time.sleep(self.current_reconnect_interval)
+                            # Increase the reconnect interval for the next attempt (exponential backoff)
+                            self.current_reconnect_interval = min(self.current_reconnect_interval * 2, self.max_reconnect_interval)
+                else:
+                    # If we're connected, reset the reconnection parameters
+                    if self.reconnect_attempt > 0:
+                        logger.info(f"Connection restored for {self.client_type} WebSocket. Resetting reconnection parameters.")
+                        self.reconnect_attempt = 0
+                        self.current_reconnect_interval = self.reconnect_interval
+                    
+                    # Connected and healthy, sleep for a short time before checking again
+                    time.sleep(1)
+                
             except Exception as e:
                 logger.error(f"Error in WebSocket thread: {e}")
                 logger.error(traceback.format_exc())
-                time.sleep(self.reconnect_interval)
+                time.sleep(self.current_reconnect_interval)
+                self.reconnect_attempt += 1
+                self.current_reconnect_interval = min(self.current_reconnect_interval * 2, self.max_reconnect_interval)
     
     def send_message(self, data):
         """
