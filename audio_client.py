@@ -232,14 +232,12 @@ class AudioRecorder:
             
             # Prepare the payload
             payload = {
-                'type': 'audio',
-                'chunk_id': chunk_id,
                 'timestamp': time.time(),
-                'sample_rate': self.sample_rate,
-                'channels': self.channels,
                 'device_id': DEVICE_ID,
                 'audio_data': encoded_data
             }
+            
+            payload = json.dumps(payload)
             
             # Send through WebSocket
             result = self.ws_client.send_message(payload)
