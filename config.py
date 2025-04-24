@@ -18,8 +18,8 @@ AUDIO_SERVER_HOST = "192.168.5.51"     # Địa chỉ IP server âm thanh
 AUDIO_SERVER_PORT = 8000              # Port server âm thanh
 
 # Sử dụng ngrok - Đặt thành True nếu muốn kết nối qua ngrok, False để kết nối trực tiếp qua IP
-USE_NGROK_FOR_IMAGE = False           # Sử dụng ngrok cho server hình ảnh
-USE_NGROK_FOR_AUDIO = False           # Sử dụng ngrok cho server âm thanh
+USE_NGROK_FOR_IMAGE = True           # Sử dụng ngrok cho server hình ảnh
+USE_NGROK_FOR_AUDIO = True          # Sử dụng ngrok cho server âm thanh
 
 # URL ngrok (chỉ cần điền nếu USE_NGROK = True)
 IMAGE_NGROK_URL = "e112-117-2-255-206.ngrok-free.app"
