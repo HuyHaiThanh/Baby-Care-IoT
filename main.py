@@ -109,12 +109,7 @@ def parse_arguments():
     # Nhóm tùy chọn hiển thị
     display_group = parser.add_argument_group('Tùy chọn hiển thị')
     display_group.add_argument('--simple-display', action='store_true', help='Sử dụng chế độ hiển thị đơn giản (tương thích tốt hơn)')
-    
-    # Thêm tùy chọn cho chế độ hiển thị log
-    log_group = parser.add_argument_group('Tùy chọn hiển thị log')
-    log_display = log_group.add_mutually_exclusive_group()
-    log_display.add_argument('--quiet', action='store_true', help='Chỉ hiển thị giao diện, không hiện log/lỗi')
-    log_display.add_argument('--verbose', action='store_true', help='Hiển thị chi tiết log/lỗi')
+    display_group.add_argument('--debug', action='store_true', help='Hiển thị thông tin log và chi tiết lỗi')
     
     # Nhóm tùy chọn server
     server_group = parser.add_argument_group('Cấu hình kết nối server')
@@ -132,16 +127,13 @@ def main():
     # Process command line arguments
     args = parse_arguments()
     
-    # Cấu hình chế độ hiển thị log - thực hiện trước để điều khiển log trong quá trình khởi động
+    # Cấu hình chế độ hiển thị log - mặc định tắt, chỉ bật khi có --debug
     try:
-        from utils import set_console_logging
+        from utils import enable_console_logging
         
-        if args.quiet:
-            print("\n>> Đang chuyển sang chế độ hiển thị giao diện (không hiện log)")
-            set_console_logging(enabled=False)
-        elif args.verbose:
-            print("\n>> Đang chuyển sang chế độ hiển thị đầy đủ log")
-            set_console_logging(enabled=True)
+        if args.debug:
+            print("\n>> Đang chuyển sang chế độ debug (hiển thị log)")
+            enable_console_logging()  # Bật hiển thị log khi có --debug
     except Exception as e:
         print(f"Lỗi khi cấu hình chế độ hiển thị log: {e}")
     

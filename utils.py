@@ -15,18 +15,15 @@ from config import DEVICE_NAME, DEVICE_ID, CONNECTION_TIMEOUT, MAX_RETRIES, RETR
 logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 os.makedirs(logs_dir, exist_ok=True)
 
-# Cấu hình logging
+# Cấu hình logging - HOÀN TOÀN TẮT HIỂN THỊ CONSOLE MẶC ĐỊNH
 logger = logging.getLogger('pi-client')
 logger.setLevel(logging.INFO)
 log_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-# Cấu hình để ghi log ra console
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(log_format)
-logger.addHandler(console_handler)
+# Mặc định KHÔNG ghi log ra console
+console_handler = None
 
 # Cấu hình để ghi log vào file với rotation
-# Tạo file log mới mỗi ngày hoặc khi file vượt quá 5MB
 file_handler = logging.handlers.TimedRotatingFileHandler(
     filename=os.path.join(logs_dir, 'babycare.log'),
     when='midnight',
@@ -45,28 +42,21 @@ error_file_handler.setFormatter(log_format)
 error_file_handler.setLevel(logging.ERROR)
 logger.addHandler(error_file_handler)
 
-# Hàm để kích hoạt/vô hiệu hóa hiển thị log ra console
-def set_console_logging(enabled=True):
+# Hàm để bật logging ra console (chỉ dùng khi debug=True)
+def enable_console_logging():
     """
-    Bật hoặc tắt hiển thị log ra console
-    
-    Args:
-        enabled (bool): True để bật hiển thị log, False để tắt
+    Bật hiển thị log ra console (dùng khi debug=True)
     """
     global console_handler
     
-    # Tìm console handler hiện tại và xóa nó
-    for handler in logger.handlers[:]:
-        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
-            logger.removeHandler(handler)
-            console_handler = None
+    # Tránh thêm nhiều handler trùng lặp
+    if console_handler is not None:
+        return
     
-    # Nếu cần bật lại, tạo handler mới
-    if enabled:
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(log_format)
-        logger.addHandler(console_handler)
-        logger.info("Console logging enabled")
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(log_format)
+    logger.addHandler(console_handler)
+    logger.info("Console logging enabled for debugging")
 
 def get_ip_addresses():
     """
