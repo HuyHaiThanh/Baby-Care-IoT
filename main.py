@@ -8,38 +8,19 @@ import sys
 import argparse
 import traceback
 
-# Tắt hiển thị log ra console ngay từ đầu (mặc định chỉ hiển thị giao diện)
-import logging
-logging.getLogger('pi-client').handlers = []  # Xóa tất cả handlers mặc định
-
 # Thêm log file để theo dõi quá trình khởi động
 print("=== STARTING UP - INITIAL DIAGNOSTICS ===")
 print(f"Python version: {sys.version}")
 print(f"Current working directory: {os.getcwd()}")
 print("Checking for required directories...")
 
-# ===== KHÔNG XÓA STDERR ĐỂ CÓ THỂ XEM LỖI =====
-# Comment dòng code chuyển hướng stderr để có thể thấy thông báo lỗi
-# os.environ['PYTHONUNBUFFERED'] = '1'
-# devnull = os.open(os.devnull, os.O_WRONLY)
-# old_stderr = os.dup(2)
-# sys.stderr.flush()
-# os.dup2(devnull, 2)
-# os.close(devnull)
-
 # Check and handle NumPy/SciPy errors
 try:
-    # Tạm thời bỏ qua việc khôi phục stderr vì chúng ta không chuyển hướng nó nữa
-    # os.dup2(old_stderr, 2)
     import numpy as np
     print("NumPy imported successfully")
     try:
         import scipy.signal
         print("SciPy imported successfully")
-        # Không chuyển hướng stderr nữa
-        # devnull = os.open(os.devnull, os.O_WRONLY)
-        # os.dup2(devnull, 2)
-        # os.close(devnull)
     except ImportError:
         print("\n❌ Error: NumPy and SciPy versions are incompatible!")
         print("Please reinstall the libraries with compatible versions:")
@@ -59,6 +40,14 @@ except ImportError:
 # Import các module cần thiết
 print("Importing modules...")
 try:
+    from utils import logger, set_debug_mode
+    print("✓ utils imported")
+except ImportError as e:
+    print(f"❌ Error importing utils: {e}")
+    traceback.print_exc()
+    sys.exit(1)
+
+try:
     from audio_client import AudioRecorder
     print("✓ audio_client imported")
 except ImportError as e:
@@ -73,13 +62,6 @@ except ImportError as e:
     traceback.print_exc()
 
 try:
-    from utils import logger
-    print("✓ utils imported")
-except ImportError as e:
-    print(f"❌ Error importing utils: {e}")
-    traceback.print_exc()
-
-try:
     from config import IMAGE_SERVER_URL, AUDIO_SERVER_URL
     print(f"✓ Server URLs loaded: ")
     print(f"  - Image server: {IMAGE_SERVER_URL}")
@@ -88,8 +70,10 @@ except ImportError as e:
     print(f"❌ Error importing config: {e}")
     traceback.print_exc()
 
-# Flag to control program exit
+# Flag để kiểm soát kết thúc chương trình
 running = True
+# Flag để xác định chế độ debug
+debug_mode = False
 
 def signal_handler(sig, frame):
     """Handle system shutdown signals."""
@@ -120,20 +104,24 @@ def parse_arguments():
 
 def main():
     """Main function to start the program"""
-    # Register signal handlers for program termination
+    global debug_mode
+    
+    # Đăng ký handler cho tín hiệu dừng chương trình
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # Process command line arguments
+    # Xử lý tham số dòng lệnh
     args = parse_arguments()
     
     # Cấu hình chế độ hiển thị log - mặc định tắt, chỉ bật khi có --debug
     try:
-        from utils import enable_console_logging
-        
         if args.debug:
             print("\n>> Đang chuyển sang chế độ debug (hiển thị log)")
-            enable_console_logging()  # Bật hiển thị log khi có --debug
+            set_debug_mode(True)
+            debug_mode = True
+        else:
+            set_debug_mode(False)
+            debug_mode = False
     except Exception as e:
         print(f"Lỗi khi cấu hình chế độ hiển thị log: {e}")
     
@@ -242,7 +230,7 @@ def main():
         
     except Exception as e:
         print(f"\n>> Lỗi khi cập nhật cấu hình kết nối: {e}")
-        if args.debug:
+        if debug_mode:
             print("Chi tiết lỗi:")
             traceback.print_exc()
     
@@ -320,9 +308,14 @@ def main():
         print(f"• Capture photos: every {PHOTO_INTERVAL} seconds")
     
     print("-" * 60)
-    print("\nSystem running. Press Ctrl+C to stop.")
-    print("Status display will start in 2 seconds...")
-    time.sleep(2)  # Give time to read initial info
+    
+    # Hiển thị thông tin về chế độ chạy
+    if debug_mode:
+        print("\n>> CHẾ ĐỘ DEBUG ĐANG BẬT - Chỉ hiển thị log, không hiển thị giao diện trạng thái")
+    else:
+        print("\nSystem running. Press Ctrl+C to stop.")
+        print("Status display will start in 2 seconds...")
+        time.sleep(2)  # Give time to read initial info
     
     # Update interval
     update_interval = 1.0
@@ -410,91 +403,91 @@ def main():
         
         return status_lines
     
-    # Try to use alternative display method that works better in all terminals
+    # THAY ĐỔI HOÀN TOÀN: Tách biệt rõ ràng giữa chế độ debug và chế độ hiển thị giao diện
     try:
-        # Nếu là chế độ debug, không hiển thị giao diện động để tránh xung đột với log
-        if args.debug:
-            print("\n>> Đang chạy ở chế độ debug - chỉ hiển thị log, không hiển thị giao diện trạng thái")
+        # TH1: Nếu là chế độ debug, không hiển thị giao diện, chỉ chờ tín hiệu kết thúc
+        if debug_mode:
+            # Chỉ hiển thị thông báo ban đầu rồi để cho log hiển thị
+            logger.info("Running in debug mode - Only showing logs, no status interface")
+            logger.info(f"Audio module: {'Running' if audio_client else 'Disabled'}")
+            logger.info(f"Camera module: {'Running' if camera_client else 'Disabled'}")
             
-            # Vòng lặp chính - chỉ kiểm tra tín hiệu dừng
+            # Chỉ chờ tín hiệu kết thúc
             while running:
-                # Chỉ kiểm tra tín hiệu dừng và ngủ
                 time.sleep(1.0)
                 
-        # Nếu là chế độ hiển thị đơn giản, cập nhật theo định kỳ
+        # TH2: Nếu là chế độ hiển thị đơn giản, cập nhật định kỳ và xóa màn hình
         elif args.simple_display:
-            print("\n>> Using simple display mode for compatibility")
-            # Main loop - Simple display
+            print("\n>> Sử dụng chế độ hiển thị đơn giản")
             last_display_time = 0
-            display_interval = 5  # Update every 5 seconds
+            display_interval = 5  # Cập nhật mỗi 5 giây
             
             while running:
                 current_time = time.time()
                 if current_time - last_display_time >= display_interval:
-                    # Get current status
-                    status_lines = get_status_display()
+                    # Xóa màn hình cũ (Windows/Linux)
+                    os.system('cls' if os.name == 'nt' else 'clear')
                     
-                    # Print new status with a separator
-                    print("\n" + "-" * 60)
+                    # Lấy và hiển thị trạng thái mới
+                    status_lines = get_status_display()
                     print("\n".join(status_lines))
-                    print("-" * 60)
+                    print("\nPress Ctrl+C to exit")
                     
                     last_display_time = current_time
                 
-                # Wait a bit to avoid high CPU usage
+                # Nghỉ để giảm CPU
                 time.sleep(0.5)
-        # Mặc định: Sử dụng hiển thị giao diện toàn màn hình
+                
+        # TH3: Mặc định - Sử dụng ANSI để hiển thị giao diện động
         else:
-            # First clear any existing output and disable cursor
-            print("\033[2J\033[H\033[?25l", end="", flush=True)  # Clear screen, home cursor, hide cursor
+            print("\n>> Bắt đầu hiển thị giao diện trạng thái...")
+            
+            # Xóa màn hình và ẩn con trỏ
+            print("\033[2J\033[H\033[?25l", end="", flush=True)
             
             previous_output = ""
             
-            # Main display loop
             while running:
                 try:
-                    # Get current status
+                    # Lấy trạng thái hiện tại
                     status_lines = get_status_display()
                     current_output = "\n".join(status_lines)
                     
-                    # Only update if something changed
+                    # Chỉ cập nhật nếu có sự thay đổi
                     if current_output != previous_output:
-                        # Move cursor to home position
+                        # Di chuyển đến đầu màn hình
                         print("\033[H", end="", flush=True)
                         
-                        # Print new status
-                        print(current_output, end="", flush=True)
+                        # In trạng thái mới
+                        print(current_output, flush=True)
                         
-                        # Clear to end of screen to remove any previous content
+                        # Xóa đến cuối màn hình để loại bỏ nội dung cũ
                         print("\033[J", end="", flush=True)
                         
-                        # Remember output
+                        # Lưu đầu ra hiện tại
                         previous_output = current_output
                     
-                    # Wait for next update
+                    # Đợi trước khi cập nhật tiếp theo
                     time.sleep(update_interval)
                 except Exception as e:
-                    # If we encounter an error with this display method, fall back
-                    logger.error(f"Display error: {e}")
-                    print(f"\nDisplay error: {e}")
-                    print("Falling back to simple display mode...")
-                    
-                    # Switch to simple display mode
+                    print(f"Lỗi hiển thị: {e}")
+                    # Chuyển sang chế độ hiển thị đơn giản
+                    print("\nChuyển sang chế độ hiển thị đơn giản...")
                     args.simple_display = True
                     break
-                    
+                
     except KeyboardInterrupt:
-        print("\nCtrl+C pressed, stopping system")
-        logger.info("Stop signal received from user")
+        print("\nNhận tín hiệu Ctrl+C, đang dừng hệ thống...")
     except Exception as e:
-        print(f"\nError in main loop: {e}")
-        traceback.print_exc()
+        print(f"Lỗi hệ thống: {e}")
+        if debug_mode:
+            traceback.print_exc()
     finally:
-        # Show cursor again
+        # Hiển thị lại con trỏ
         print("\033[?25h", end="", flush=True)
     
-    # Cleanup on exit
-    print("\n\nStopping system...")
+    # Dọn dẹp khi thoát
+    print("\nĐang dừng hệ thống...")
     
     if audio_client:
         print(">> Stopping audio module...")
@@ -504,14 +497,14 @@ def main():
     if camera_client:
         print(">> Stopping image module...")
         camera_client.stop()
-        
-    # Show final status
-    print("\nFinal system status:")
-    final_status = get_status_display()
-    print("\n".join(final_status))
-    print("\n✓ System stopped safely")
     
-    # Ensure we exit properly
+    # Hiển thị trạng thái cuối cùng (chỉ khi không ở chế độ debug)
+    if not debug_mode:
+        print("\nTrạng thái cuối cùng:")
+        final_status = get_status_display()
+        print("\n".join(final_status))
+    
+    print("\n✓ Hệ thống đã dừng an toàn")
     return 0
 
 if __name__ == "__main__":
