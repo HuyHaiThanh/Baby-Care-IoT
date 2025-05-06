@@ -230,16 +230,15 @@ class AudioRecorder:
             # Encode the WAV data as base64
             encoded_data = base64.b64encode(wav_data).decode('utf-8')
             
-            # Prepare the payload
+            # Prepare the payload - QUAN TRỌNG: không chuyển đổi thành JSON ở đây
+            # vì hàm send_message của WebSocketClient đã làm điều này
             payload = {
                 'timestamp': time.time(),
                 'device_id': DEVICE_ID,
                 'audio_data': encoded_data
             }
             
-            payload = json.dumps(payload)
-            
-            # Send through WebSocket
+            # Send through WebSocket - truyền trực tiếp đối tượng dict
             result = self.ws_client.send_message(payload)
             if result:
                 self.last_ws_status = "Data sent"
