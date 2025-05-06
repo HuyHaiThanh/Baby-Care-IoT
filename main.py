@@ -97,32 +97,19 @@ def parse_arguments():
     """Process command line arguments"""
     parser = argparse.ArgumentParser(description='Raspberry Pi client for baby monitoring system')
     
-    # Các tùy chọn hiện có
-    parser.add_argument('--no-audio', action='store_true', help='Disable audio recording')
-    parser.add_argument('--no-camera', action='store_true', help='Disable camera')
-    parser.add_argument('--photo-interval', type=int, default=1, help='Interval between photos (seconds)')
-    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    # Nhóm tùy chọn truyền dữ liệu
+    data_group = parser.add_argument_group('Tùy chọn truyền dữ liệu')
+    data_group.add_argument('--camera-mode', action='store_true', help='Chỉ chạy chế độ truyền hình ảnh')
+    data_group.add_argument('--audio-mode', action='store_true', help='Chỉ chạy chế độ truyền âm thanh')
     
-    # Thêm tùy chọn mode đơn giản
-    parser.add_argument('--mode', choices=['local', 'ngrok'], default='local',
-                        help='Connection mode: "local" to use IP addresses, "ngrok" to use ngrok URLs (default: local)')
+    # Nhóm tùy chọn hiển thị
+    display_group = parser.add_argument_group('Tùy chọn hiển thị')
+    display_group.add_argument('--simple-display', action='store_true', help='Sử dụng chế độ hiển thị đơn giản (tương thích tốt hơn)')
     
-    # Các tùy chọn cấu hình kết nối chi tiết (ẩn khỏi help để không gây nhầm lẫn)
-    connection_group = parser.add_argument_group('Advanced Connection Configuration')
-    connection_group.add_argument('--image-use-ngrok', action='store_true', help=argparse.SUPPRESS)
-    connection_group.add_argument('--image-use-local', action='store_false', dest='image_use_ngrok', help=argparse.SUPPRESS)
-    connection_group.add_argument('--image-host', help='Image server host (IP address or hostname, for local mode)')
-    connection_group.add_argument('--image-port', type=int, help='Image server port (for local mode)')
-    connection_group.add_argument('--image-ngrok', help='Image server ngrok URL (without http/https, for ngrok mode)')
-    
-    connection_group.add_argument('--audio-use-ngrok', action='store_true', help=argparse.SUPPRESS)
-    connection_group.add_argument('--audio-use-local', action='store_false', dest='audio_use_ngrok', help=argparse.SUPPRESS)
-    connection_group.add_argument('--audio-host', help='Audio server host (IP address or hostname, for local mode)')
-    connection_group.add_argument('--audio-port', type=int, help='Audio server port (for local mode)')
-    connection_group.add_argument('--audio-ngrok', help='Audio server ngrok URL (without http/https, for ngrok mode)')
-    
-    # Thêm tùy chọn --simple-display để bỏ qua chế độ hiển thị phức tạp
-    parser.add_argument('--simple-display', action='store_true', help='Use simple display mode for compatibility')
+    # Nhóm tùy chọn server
+    server_group = parser.add_argument_group('Cấu hình kết nối server')
+    server_group.add_argument('--image-server', help='Địa chỉ server hình ảnh (IP:port hoặc hostname:port)')
+    server_group.add_argument('--audio-server', help='Địa chỉ server âm thanh (IP:port hoặc hostname:port)')
     
     return parser.parse_args()
 
@@ -149,60 +136,59 @@ def main():
         import json
         from config import CONNECTION_CONFIG, save_connection_config
         
-        # Xử lý tham số --mode (ưu tiên cao nhất)
-        if args.mode:
-            is_ngrok_mode = args.mode == 'ngrok'
+        # Xử lý các tham số server tùy chọn
+        # Kiểm tra nếu người dùng đã nhập địa chỉ server hình ảnh
+        if args.image_server:
+            print(f"\n>> Đang cấu hình kết nối đến server hình ảnh: {args.image_server}")
             
-            # Cập nhật cả hai server dựa trên chế độ
-            CONNECTION_CONFIG["image_server"]["use_ngrok"] = is_ngrok_mode
-            CONNECTION_CONFIG["audio_server"]["use_ngrok"] = is_ngrok_mode
-            
-            print(f"\n>> Đang chuyển sang chế độ kết nối: {args.mode.upper()}")
-            
-        # Các tham số chi tiết có thể ghi đè lên chế độ nếu được chỉ định
+            # Tách host và port từ chuỗi nhập vào (định dạng host:port)
+            if ":" in args.image_server:
+                host, port = args.image_server.split(":")
+                port = int(port)
+                
+                # Cập nhật cấu hình server hình ảnh
+                CONNECTION_CONFIG["image_server"]["use_ngrok"] = False
+                CONNECTION_CONFIG["image_server"]["local_host"] = host
+                CONNECTION_CONFIG["image_server"]["local_port"] = port
+                
+                print(f"  - Host: {host}")
+                print(f"  - Port: {port}")
+            else:
+                # Nếu chỉ có host, sử dụng port mặc định 80
+                CONNECTION_CONFIG["image_server"]["use_ngrok"] = False
+                CONNECTION_CONFIG["image_server"]["local_host"] = args.image_server
+                CONNECTION_CONFIG["image_server"]["local_port"] = 80
+                
+                print(f"  - Host: {args.image_server}")
+                print(f"  - Port: 80 (mặc định)")
         
-        # Xử lý cấu hình kết nối cho Image Server
-        if hasattr(args, 'image_use_ngrok') or args.image_host or args.image_port or args.image_ngrok:
-            image_server_config = CONNECTION_CONFIG["image_server"]
+        # Kiểm tra nếu người dùng đã nhập địa chỉ server âm thanh
+        if args.audio_server:
+            print(f"\n>> Đang cấu hình kết nối đến server âm thanh: {args.audio_server}")
             
-            # Cập nhật cấu hình khi người dùng chỉ định
-            if hasattr(args, 'image_use_ngrok'):
-                image_server_config["use_ngrok"] = args.image_use_ngrok
-            
-            if args.image_host:
-                image_server_config["local_host"] = args.image_host
-            
-            if args.image_port:
-                image_server_config["local_port"] = args.image_port
+            # Tách host và port từ chuỗi nhập vào (định dạng host:port)
+            if ":" in args.audio_server:
+                host, port = args.audio_server.split(":")
+                port = int(port)
                 
-            if args.image_ngrok:
-                image_server_config["ngrok_url"] = args.image_ngrok
+                # Cập nhật cấu hình server âm thanh
+                CONNECTION_CONFIG["audio_server"]["use_ngrok"] = False
+                CONNECTION_CONFIG["audio_server"]["local_host"] = host
+                CONNECTION_CONFIG["audio_server"]["local_port"] = port
                 
-            # Cập nhật lại cấu hình
-            CONNECTION_CONFIG["image_server"] = image_server_config
-        
-        # Xử lý cấu hình kết nối cho Audio Server
-        if hasattr(args, 'audio_use_ngrok') or args.audio_host or args.audio_port or args.audio_ngrok:
-            audio_server_config = CONNECTION_CONFIG["audio_server"]
-            
-            # Cập nhật cấu hình khi người dùng chỉ định
-            if hasattr(args, 'audio_use_ngrok'):
-                audio_server_config["use_ngrok"] = args.audio_use_ngrok
-            
-            if args.audio_host:
-                audio_server_config["local_host"] = args.audio_host
-            
-            if args.audio_port:
-                audio_server_config["local_port"] = args.audio_port
+                print(f"  - Host: {host}")
+                print(f"  - Port: {port}")
+            else:
+                # Nếu chỉ có host, sử dụng port mặc định 80
+                CONNECTION_CONFIG["audio_server"]["use_ngrok"] = False
+                CONNECTION_CONFIG["audio_server"]["local_host"] = args.audio_server
+                CONNECTION_CONFIG["audio_server"]["local_port"] = 80
                 
-            if args.audio_ngrok:
-                audio_server_config["ngrok_url"] = args.audio_ngrok
-                
-            # Cập nhật lại cấu hình
-            CONNECTION_CONFIG["audio_server"] = audio_server_config
+                print(f"  - Host: {args.audio_server}")
+                print(f"  - Port: 80 (mặc định)")
         
         # Lưu cấu hình mới vào file
-        print("Đang lưu cấu hình kết nối...")
+        print("\n>> Đang lưu cấu hình kết nối...")
         save_connection_config(CONNECTION_CONFIG)
         
         # Tải lại các URL từ cấu hình mới
@@ -224,7 +210,7 @@ def main():
             config.IMAGE_SERVER_HOST = image_url_parts[0]
             if len(image_url_parts) > 1:
                 config.IMAGE_SERVER_PORT = int(image_url_parts[1].split("/")[0])
-                
+        
         # AUDIO_SERVER_URL dạng http(s)://host:port hoặc http(s)://host (không có port)
         if "://" in config.AUDIO_SERVER_URL:
             audio_url_parts = config.AUDIO_SERVER_URL.split("://")[1].split(":")
@@ -234,18 +220,10 @@ def main():
             else:
                 config.AUDIO_SERVER_PORT = 443 if "https://" in config.AUDIO_SERVER_URL else 80
         
-        print("\n>> Đã cập nhật cấu hình kết nối từ tham số dòng lệnh")
-        
-        # Hiển thị thông tin kết nối
-        for server_type in ["image", "audio"]:
-            server_config = CONNECTION_CONFIG[f"{server_type}_server"]
-            connection_type = "ngrok" if server_config["use_ngrok"] else "local IP"
-            if server_config["use_ngrok"]:
-                host_info = server_config["ngrok_url"]
-            else:
-                host_info = f"{server_config['local_host']}:{server_config['local_port']}"
-            
-            print(f"• {server_type.capitalize()} server: {connection_type} ({host_info})")
+        # Hiển thị thông tin kết nối đã cập nhật
+        print("\n>> Cấu hình kết nối hiện tại:")
+        print(f"• Server hình ảnh: {config.IMAGE_SERVER_HOST}:{config.IMAGE_SERVER_PORT}")
+        print(f"• Server âm thanh: {config.AUDIO_SERVER_HOST}:{config.AUDIO_SERVER_PORT}")
         
     except Exception as e:
         print(f"\n>> Lỗi khi cập nhật cấu hình kết nối: {e}")
@@ -257,8 +235,25 @@ def main():
     audio_client = None
     camera_client = None
     
-    # Start AudioRecorder if not disabled via parameters
-    if not args.no_audio:
+    # Cập nhật cách xác định mode chạy (chỉ audio, chỉ camera hoặc cả hai)
+    run_audio_mode = not args.camera_mode  # Chạy audio nếu không phải chỉ chạy camera
+    run_camera_mode = not args.audio_mode  # Chạy camera nếu không phải chỉ chạy audio
+    
+    # Thông báo về chế độ đang chạy
+    print("\n>> Chế độ hoạt động:")
+    if run_audio_mode and run_camera_mode:
+        print("  - Chạy cả hai chế độ: Truyền âm thanh và hình ảnh")
+    elif run_audio_mode:
+        print("  - Chỉ chạy chế độ truyền âm thanh")
+    elif run_camera_mode:
+        print("  - Chỉ chạy chế độ truyền hình ảnh")
+    else:
+        print("  - Lưu ý: Cả hai chế độ đều bị tắt, sẽ bật cả hai")
+        run_audio_mode = True
+        run_camera_mode = True
+    
+    # Start AudioRecorder if enabled
+    if run_audio_mode:
         print("\n>> Starting audio processing module...")
         try:
             audio_client = AudioRecorder()
@@ -266,16 +261,17 @@ def main():
             print("✓ Audio module started successfully")
         except Exception as e:
             print(f"✗ Cannot start audio module: {e}")
-            if args.debug:
-                print("Detailed error:")
-                traceback.print_exc()
+            print("Detailed error:")
+            traceback.print_exc()
             audio_client = None
     
-    # Start CameraClient if not disabled via parameters
-    if not args.no_camera:
+    # Start CameraClient if enabled
+    if run_camera_mode:
         print("\n>> Starting image processing module...")
         try:
-            camera_client = CameraClient(interval=args.photo_interval)
+            # Lấy khoảng thời gian chụp ảnh từ cấu hình thay vì tham số dòng lệnh
+            from config import PHOTO_INTERVAL
+            camera_client = CameraClient(interval=PHOTO_INTERVAL)
             if not camera_client.start():
                 print("✗ Camera client start() returned False")
                 camera_client = None
@@ -283,9 +279,8 @@ def main():
                 print("✓ Image module started successfully")
         except Exception as e:
             print(f"✗ Cannot start image module: {e}")
-            if args.debug:
-                print("Detailed error:")
-                traceback.print_exc()
+            print("Detailed error:")
+            traceback.print_exc()
             camera_client = None
     
     if not audio_client and not camera_client:
@@ -305,7 +300,9 @@ def main():
     print(f"• Image server: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
     
     if camera_client:
-        print(f"• Capture photos: every {args.photo_interval} seconds")
+        # Lấy thông tin khoảng thời gian chụp ảnh từ config
+        from config import PHOTO_INTERVAL
+        print(f"• Capture photos: every {PHOTO_INTERVAL} seconds")
     
     print("-" * 60)
     print("\nSystem running. Press Ctrl+C to stop.")
@@ -380,7 +377,8 @@ def main():
                 # Nếu gửi thành công
                 camera_status = "Sent successfully"
             
-            status_lines.append(f"• Images: Every {args.photo_interval}s")
+            # Sử dụng thời gian chụp từ camera_client.interval
+            status_lines.append(f"• Images: Every {camera_client.interval}s")
             status_lines.append(f"  - Status: {camera_status}")
             status_lines.append(f"  File: {camera_client.current_photo_file}")
             status_lines.append(f"  Resolution: 640x480px")
