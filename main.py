@@ -412,8 +412,17 @@ def main():
     
     # Try to use alternative display method that works better in all terminals
     try:
-        # Kiểm tra xem có sử dụng chế độ hiển thị đơn giản không
-        if args.simple_display:
+        # Nếu là chế độ debug, không hiển thị giao diện động để tránh xung đột với log
+        if args.debug:
+            print("\n>> Đang chạy ở chế độ debug - chỉ hiển thị log, không hiển thị giao diện trạng thái")
+            
+            # Vòng lặp chính - chỉ kiểm tra tín hiệu dừng
+            while running:
+                # Chỉ kiểm tra tín hiệu dừng và ngủ
+                time.sleep(1.0)
+                
+        # Nếu là chế độ hiển thị đơn giản, cập nhật theo định kỳ
+        elif args.simple_display:
             print("\n>> Using simple display mode for compatibility")
             # Main loop - Simple display
             last_display_time = 0
@@ -434,6 +443,7 @@ def main():
                 
                 # Wait a bit to avoid high CPU usage
                 time.sleep(0.5)
+        # Mặc định: Sử dụng hiển thị giao diện toàn màn hình
         else:
             # First clear any existing output and disable cursor
             print("\033[2J\033[H\033[?25l", end="", flush=True)  # Clear screen, home cursor, hide cursor
