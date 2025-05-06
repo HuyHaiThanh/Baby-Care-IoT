@@ -8,26 +8,34 @@ import sys
 import argparse
 import traceback
 
-# Redirect ALSA errors (run before importing audio libraries)
-# Save stderr to restore later if needed
-os.environ['PYTHONUNBUFFERED'] = '1'  # Ensure output is not buffered
-devnull = os.open(os.devnull, os.O_WRONLY)
-old_stderr = os.dup(2)
-sys.stderr.flush()
-os.dup2(devnull, 2)
-os.close(devnull)
+# Thêm log file để theo dõi quá trình khởi động
+print("=== STARTING UP - INITIAL DIAGNOSTICS ===")
+print(f"Python version: {sys.version}")
+print(f"Current working directory: {os.getcwd()}")
+print("Checking for required directories...")
+
+# ===== KHÔNG XÓA STDERR ĐỂ CÓ THỂ XEM LỖI =====
+# Comment dòng code chuyển hướng stderr để có thể thấy thông báo lỗi
+# os.environ['PYTHONUNBUFFERED'] = '1'
+# devnull = os.open(os.devnull, os.O_WRONLY)
+# old_stderr = os.dup(2)
+# sys.stderr.flush()
+# os.dup2(devnull, 2)
+# os.close(devnull)
 
 # Check and handle NumPy/SciPy errors
 try:
-    # Temporarily restore stderr to see NumPy/SciPy errors if any
-    os.dup2(old_stderr, 2)
+    # Tạm thời bỏ qua việc khôi phục stderr vì chúng ta không chuyển hướng nó nữa
+    # os.dup2(old_stderr, 2)
     import numpy as np
+    print("NumPy imported successfully")
     try:
         import scipy.signal
-        # Redirect stderr again after successful import
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, 2)
-        os.close(devnull)
+        print("SciPy imported successfully")
+        # Không chuyển hướng stderr nữa
+        # devnull = os.open(os.devnull, os.O_WRONLY)
+        # os.dup2(devnull, 2)
+        # os.close(devnull)
     except ImportError:
         print("\n❌ Error: NumPy and SciPy versions are incompatible!")
         print("Please reinstall the libraries with compatible versions:")
@@ -44,9 +52,37 @@ except ImportError:
     print("sudo apt-get install -y python3-numpy libatlas-base-dev\n")
     sys.exit(1)
 
-from audio_client import AudioRecorder
-from camera_client import CameraClient
-from utils import logger
+# Import các module cần thiết
+print("Importing modules...")
+try:
+    from audio_client import AudioRecorder
+    print("✓ audio_client imported")
+except ImportError as e:
+    print(f"❌ Error importing audio_client: {e}")
+    traceback.print_exc()
+
+try:
+    from camera_client import CameraClient
+    print("✓ camera_client imported")
+except ImportError as e:
+    print(f"❌ Error importing camera_client: {e}")
+    traceback.print_exc()
+
+try:
+    from utils import logger
+    print("✓ utils imported")
+except ImportError as e:
+    print(f"❌ Error importing utils: {e}")
+    traceback.print_exc()
+
+try:
+    from config import IMAGE_SERVER_URL, AUDIO_SERVER_URL
+    print(f"✓ Server URLs loaded: ")
+    print(f"  - Image server: {IMAGE_SERVER_URL}")
+    print(f"  - Audio server: {AUDIO_SERVER_URL}")
+except ImportError as e:
+    print(f"❌ Error importing config: {e}")
+    traceback.print_exc()
 
 # Flag to control program exit
 running = True
@@ -84,6 +120,9 @@ def parse_arguments():
     connection_group.add_argument('--audio-host', help='Audio server host (IP address or hostname, for local mode)')
     connection_group.add_argument('--audio-port', type=int, help='Audio server port (for local mode)')
     connection_group.add_argument('--audio-ngrok', help='Audio server ngrok URL (without http/https, for ngrok mode)')
+    
+    # Thêm tùy chọn --simple-display để bỏ qua chế độ hiển thị phức tạp
+    parser.add_argument('--simple-display', action='store_true', help='Use simple display mode for compatibility')
     
     return parser.parse_args()
 
@@ -163,6 +202,7 @@ def main():
             CONNECTION_CONFIG["audio_server"] = audio_server_config
         
         # Lưu cấu hình mới vào file
+        print("Đang lưu cấu hình kết nối...")
         save_connection_config(CONNECTION_CONFIG)
         
         # Tải lại các URL từ cấu hình mới
@@ -359,41 +399,73 @@ def main():
     
     # Try to use alternative display method that works better in all terminals
     try:
-        # First clear any existing output and disable cursor
-        print("\033[2J\033[H\033[?25l", end="", flush=True)  # Clear screen, home cursor, hide cursor
-        
-        previous_output = ""
-        
-        # Main display loop
-        while running:
-            try:
-                # Get current status
-                status_lines = get_status_display()
-                current_output = "\n".join(status_lines)
-                
-                # Only update if something changed
-                if current_output != previous_output:
-                    # Move cursor to home position
-                    print("\033[H", end="", flush=True)
+        # Kiểm tra xem có sử dụng chế độ hiển thị đơn giản không
+        if args.simple_display:
+            print("\n>> Using simple display mode for compatibility")
+            # Main loop - Simple display
+            last_display_time = 0
+            display_interval = 5  # Update every 5 seconds
+            
+            while running:
+                current_time = time.time()
+                if current_time - last_display_time >= display_interval:
+                    # Get current status
+                    status_lines = get_status_display()
                     
-                    # Print new status
-                    print(current_output, end="", flush=True)
+                    # Print new status with a separator
+                    print("\n" + "-" * 60)
+                    print("\n".join(status_lines))
+                    print("-" * 60)
                     
-                    # Clear to end of screen to remove any previous content
-                    print("\033[J", end="", flush=True)
+                    last_display_time = current_time
+                
+                # Wait a bit to avoid high CPU usage
+                time.sleep(0.5)
+        else:
+            # First clear any existing output and disable cursor
+            print("\033[2J\033[H\033[?25l", end="", flush=True)  # Clear screen, home cursor, hide cursor
+            
+            previous_output = ""
+            
+            # Main display loop
+            while running:
+                try:
+                    # Get current status
+                    status_lines = get_status_display()
+                    current_output = "\n".join(status_lines)
                     
-                    # Remember output
-                    previous_output = current_output
-                
-                # Wait for next update
-                time.sleep(update_interval)
-            except Exception as e:
-                # If we encounter an error with this display method, fall back
-                logger.error(f"Display error: {e}")
-                break
-                
+                    # Only update if something changed
+                    if current_output != previous_output:
+                        # Move cursor to home position
+                        print("\033[H", end="", flush=True)
+                        
+                        # Print new status
+                        print(current_output, end="", flush=True)
+                        
+                        # Clear to end of screen to remove any previous content
+                        print("\033[J", end="", flush=True)
+                        
+                        # Remember output
+                        previous_output = current_output
+                    
+                    # Wait for next update
+                    time.sleep(update_interval)
+                except Exception as e:
+                    # If we encounter an error with this display method, fall back
+                    logger.error(f"Display error: {e}")
+                    print(f"\nDisplay error: {e}")
+                    print("Falling back to simple display mode...")
+                    
+                    # Switch to simple display mode
+                    args.simple_display = True
+                    break
+                    
     except KeyboardInterrupt:
+        print("\nCtrl+C pressed, stopping system")
         logger.info("Stop signal received from user")
+    except Exception as e:
+        print(f"\nError in main loop: {e}")
+        traceback.print_exc()
     finally:
         # Show cursor again
         print("\033[?25h", end="", flush=True)
