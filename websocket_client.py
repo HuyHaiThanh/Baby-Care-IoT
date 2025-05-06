@@ -141,7 +141,7 @@ class WebSocketClient:
         Establish connection to WebSocket server
         """
         try:
-                if hasattr(self, 'ws') and self.ws:
+            if hasattr(self, 'ws') and self.ws:
                 self.ws.close()
                 
             logger.info(f"Connecting to {self.client_type} WebSocket at {self.ws_url}")
