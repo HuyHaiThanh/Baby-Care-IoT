@@ -8,6 +8,10 @@ import sys
 import argparse
 import traceback
 
+# Tắt hiển thị log ra console ngay từ đầu (mặc định chỉ hiển thị giao diện)
+import logging
+logging.getLogger('pi-client').handlers = []  # Xóa tất cả handlers mặc định
+
 # Thêm log file để theo dõi quá trình khởi động
 print("=== STARTING UP - INITIAL DIAGNOSTICS ===")
 print(f"Python version: {sys.version}")
@@ -106,6 +110,12 @@ def parse_arguments():
     display_group = parser.add_argument_group('Tùy chọn hiển thị')
     display_group.add_argument('--simple-display', action='store_true', help='Sử dụng chế độ hiển thị đơn giản (tương thích tốt hơn)')
     
+    # Thêm tùy chọn cho chế độ hiển thị log
+    log_group = parser.add_argument_group('Tùy chọn hiển thị log')
+    log_display = log_group.add_mutually_exclusive_group()
+    log_display.add_argument('--quiet', action='store_true', help='Chỉ hiển thị giao diện, không hiện log/lỗi')
+    log_display.add_argument('--verbose', action='store_true', help='Hiển thị chi tiết log/lỗi')
+    
     # Nhóm tùy chọn server
     server_group = parser.add_argument_group('Cấu hình kết nối server')
     server_group.add_argument('--image-server', help='Địa chỉ server hình ảnh (IP:port hoặc hostname:port)')
@@ -121,6 +131,19 @@ def main():
     
     # Process command line arguments
     args = parse_arguments()
+    
+    # Cấu hình chế độ hiển thị log - thực hiện trước để điều khiển log trong quá trình khởi động
+    try:
+        from utils import set_console_logging
+        
+        if args.quiet:
+            print("\n>> Đang chuyển sang chế độ hiển thị giao diện (không hiện log)")
+            set_console_logging(enabled=False)
+        elif args.verbose:
+            print("\n>> Đang chuyển sang chế độ hiển thị đầy đủ log")
+            set_console_logging(enabled=True)
+    except Exception as e:
+        print(f"Lỗi khi cấu hình chế độ hiển thị log: {e}")
     
     # System start time
     start_time = time.time()

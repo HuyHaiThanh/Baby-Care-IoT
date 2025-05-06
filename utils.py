@@ -45,6 +45,29 @@ error_file_handler.setFormatter(log_format)
 error_file_handler.setLevel(logging.ERROR)
 logger.addHandler(error_file_handler)
 
+# Hàm để kích hoạt/vô hiệu hóa hiển thị log ra console
+def set_console_logging(enabled=True):
+    """
+    Bật hoặc tắt hiển thị log ra console
+    
+    Args:
+        enabled (bool): True để bật hiển thị log, False để tắt
+    """
+    global console_handler
+    
+    # Tìm console handler hiện tại và xóa nó
+    for handler in logger.handlers[:]:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+            logger.removeHandler(handler)
+            console_handler = None
+    
+    # Nếu cần bật lại, tạo handler mới
+    if enabled:
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(log_format)
+        logger.addHandler(console_handler)
+        logger.info("Console logging enabled")
+
 def get_ip_addresses():
     """
     Lấy danh sách địa chỉ IP của thiết bị (trừ loopback)
