@@ -31,7 +31,7 @@ AUDIO_NGROK_URL = "a579-1-53-82-6.ngrok-free.app"
 
 # Thông tin thiết bị
 DEVICE_NAME = "Baby-Monitor-Pi2B"
-DEVICE_ID = "c17ca988-1877-4b72-a5ed-47beee86f2ae"
+DEVICE_ID = "3a54299f-37d8-452e-b048-7cb7711fe90f"
 
 # Các thư mục
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
