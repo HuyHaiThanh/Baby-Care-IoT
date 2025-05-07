@@ -13,10 +13,12 @@ from io import BytesIO
 from config import (
     AUDIO_WS_ENDPOINT, SAMPLE_RATE, CHANNELS, 
     AUDIO_DURATION, AUDIO_SLIDE_SIZE, DEVICE_ID,
-    get_ws_url  # Import this function to get the updated WebSocket URL
+    USE_VAD,  # Import VAD setting
+    get_ws_url
 )
 from utils import logger
 from websocket_client import WebSocketClient
+from scipy import signal
 
 class AudioRecorder:
     """
@@ -48,6 +50,14 @@ class AudioRecorder:
         self.window_size = window_size
         self.slide_size = slide_size
         self.max_queue_size = max_queue_size
+        
+        # Voice Activity Detection settings
+        self.use_vad = USE_VAD  # Get from config
+        self.vad_min_freq = 250  # Minimum frequency for VAD in Hz
+        self.vad_max_freq = 750  # Maximum frequency for VAD in Hz
+        self.vad_threshold = 500  # Threshold for detecting activity (adjustable)
+        self.total_chunks = 0
+        self.vad_active_chunks = 0
         
         # Store the WebSocket URL but don't create the client yet
         # We'll create it when start_recording is called to use the most up-to-date URL
@@ -165,6 +175,65 @@ class AudioRecorder:
                         
             time.sleep(0.1)
     
+    def detect_voice_activity(self, audio_data):
+        """
+        Detect if there is voice activity in the specified frequency range.
+        
+        Uses FFT to analyze the frequency spectrum and determine if there are
+        significant components in the 250-750 Hz range.
+        
+        Args:
+            audio_data (numpy.ndarray): Audio data to analyze
+            
+        Returns:
+            bool: True if voice activity is detected, False otherwise
+        """
+        if not self.use_vad:
+            return True  # Skip VAD if disabled
+            
+        try:
+            # Apply a window function to reduce spectral leakage
+            windowed_data = audio_data * np.hamming(len(audio_data))
+            
+            # Calculate FFT and power spectrum
+            fft_data = np.abs(np.fft.rfft(windowed_data))
+            power_spectrum = fft_data ** 2
+            
+            # Calculate frequency bins
+            freqs = np.fft.rfftfreq(len(windowed_data), 1/self.sample_rate)
+            
+            # Filter for frequencies in the specified range
+            freq_mask = (freqs >= self.vad_min_freq) & (freqs <= self.vad_max_freq)
+            filtered_spectrum = power_spectrum[freq_mask]
+            
+            # Check if there's significant energy in the filtered spectrum
+            if len(filtered_spectrum) > 0:
+                peak_power = np.max(filtered_spectrum)
+                average_power = np.mean(filtered_spectrum)
+                
+                # Log the detected power for debugging
+                logger.debug(f"VAD: Peak power in {self.vad_min_freq}-{self.vad_max_freq}Hz: {peak_power:.2f}, Average: {average_power:.2f}")
+                
+                # Determine if there's activity based on power threshold
+                has_activity = peak_power > self.vad_threshold
+                
+                # Update statistics
+                self.total_chunks += 1
+                if has_activity:
+                    self.vad_active_chunks += 1
+                
+                if self.total_chunks % 10 == 0:
+                    active_percentage = (self.vad_active_chunks / self.total_chunks) * 100 if self.total_chunks > 0 else 0
+                    logger.info(f"VAD stats: Active {self.vad_active_chunks}/{self.total_chunks} chunks ({active_percentage:.1f}%)")
+                
+                return has_activity
+            else:
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error in VAD processing: {e}")
+            return True  # Default to sending audio if VAD fails
+    
     def process_window(self, window_data):
         """
         Process a single window of audio data.
@@ -176,6 +245,15 @@ class AudioRecorder:
             window_data (numpy.ndarray): Audio data for the current window (3 seconds)
         """
         try:
+            # Apply Voice Activity Detection if enabled
+            if self.use_vad:
+                has_voice = self.detect_voice_activity(window_data)
+                if not has_voice:
+                    logger.debug(f"VAD: No voice activity detected in frequency range {self.vad_min_freq}-{self.vad_max_freq}Hz, skipping audio chunk")
+                    return
+                else:
+                    logger.debug(f"VAD: Voice activity detected in frequency range {self.vad_min_freq}-{self.vad_max_freq}Hz")
+            
             # Kiểm tra nếu hàng đợi đã đầy, xóa mục cũ nhất
             if self.chunk_queue.full():
                 try:
