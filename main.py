@@ -89,6 +89,7 @@ def parse_arguments():
     data_group = parser.add_argument_group('Tùy chọn truyền dữ liệu')
     data_group.add_argument('--camera-mode', action='store_true', help='Chỉ chạy chế độ truyền hình ảnh')
     data_group.add_argument('--audio-mode', action='store_true', help='Chỉ chạy chế độ truyền âm thanh')
+    data_group.add_argument('--no-vad', action='store_true', help='Tắt chức năng Voice Activity Detection (VAD)')
     
     # Nhóm tùy chọn hiển thị
     display_group = parser.add_argument_group('Tùy chọn hiển thị')
@@ -140,6 +141,16 @@ def main():
         import re
         from urllib.parse import urlparse
         from config import CONNECTION_CONFIG, save_connection_config
+        
+        # Xử lý tham số VAD (Voice Activity Detection)
+        import config
+        if args.no_vad:
+            print("\n>> Đang tắt tính năng Voice Activity Detection (VAD)")
+            config.USE_VAD = False
+        else:
+            # Mặc định là bật
+            config.USE_VAD = True
+            print("\n>> Tính năng Voice Activity Detection (VAD) đang bật")
         
         # Function to parse different server address formats
         def parse_server_address(address):
