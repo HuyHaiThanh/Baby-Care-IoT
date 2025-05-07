@@ -12,7 +12,8 @@ import json
 from io import BytesIO
 from config import (
     AUDIO_WS_ENDPOINT, SAMPLE_RATE, CHANNELS, 
-    AUDIO_DURATION, AUDIO_SLIDE_SIZE, DEVICE_ID
+    AUDIO_DURATION, AUDIO_SLIDE_SIZE, DEVICE_ID,
+    get_ws_url  # Import this function to get the updated WebSocket URL
 )
 from utils import logger
 from websocket_client import WebSocketClient
@@ -48,9 +49,10 @@ class AudioRecorder:
         self.slide_size = slide_size
         self.max_queue_size = max_queue_size
         
-        # WebSocket URL
-        ws_url = f"{AUDIO_WS_ENDPOINT}/{DEVICE_ID}"
-        logger.info(f"Audio WebSocket URL: {ws_url}")
+        # Store the WebSocket URL but don't create the client yet
+        # We'll create it when start_recording is called to use the most up-to-date URL
+        self.ws_url = None
+        self.ws_client = None
         
         self.audio = pyaudio.PyAudio()
         self.stream = None
@@ -63,13 +65,6 @@ class AudioRecorder:
         self.save_counter = 0
         self.processing_thread = None
         self.dropped_chunks_count = 0
-        
-        # Create WebSocket client
-        self.ws_client = WebSocketClient(
-            ws_url=ws_url,
-            device_id=DEVICE_ID,
-            client_type="audio"
-        )
         self.last_ws_status = "Not connected"
 
     def start_recording(self):
@@ -84,6 +79,20 @@ class AudioRecorder:
         """
         if self.is_recording:
             return
+        
+        # Get the most up-to-date WebSocket URL
+        # This ensures we use any command-line configuration changes
+        # Modified URL structure - don't append device_id as a path but as a query parameter
+        base_ws_url = get_ws_url('audio')
+        self.ws_url = f"{base_ws_url}?device_id={DEVICE_ID}"
+        logger.info(f"Connecting to audio WebSocket at {self.ws_url}")
+        
+        # Create WebSocket client with the updated URL
+        self.ws_client = WebSocketClient(
+            ws_url=self.ws_url,
+            device_id=DEVICE_ID,
+            client_type="audio"
+        )
             
         # Connect to WebSocket first
         self.ws_client.connect()

@@ -13,7 +13,7 @@ import queue  # Thêm import queue ở đây
 from io import BytesIO
 from config import (
     PHOTO_DIR, TEMP_DIR, DEVICE_ID, IMAGE_WS_ENDPOINT, 
-    PHOTO_INTERVAL
+    PHOTO_INTERVAL, get_ws_url  # Import get_ws_url function
 )
 from utils import get_timestamp, logger
 from websocket_client import WebSocketClient
@@ -72,12 +72,9 @@ class CameraClient:
         self.capture_duration = 0
         self.sending_duration = 0
         
-        # WebSocket client
-        self.ws_client = WebSocketClient(
-            ws_url=IMAGE_WS_ENDPOINT,
-            device_id=DEVICE_ID,
-            client_type="camera"
-        )
+        # Store WebSocket URL and client
+        self.ws_url = None
+        self.ws_client = None
         
         # Create required directories
         os.makedirs(PHOTO_DIR, exist_ok=True)
@@ -88,6 +85,19 @@ class CameraClient:
         Start camera client
         """
         self.running = True
+        
+        # Get the most up-to-date WebSocket URL
+        # Using query parameter for device_id like we did for audio client
+        base_ws_url = get_ws_url('image')
+        self.ws_url = f"{base_ws_url}?device_id={DEVICE_ID}"
+        logger.info(f"Connecting to image WebSocket at {self.ws_url}")
+        
+        # Create WebSocket client with the updated URL
+        self.ws_client = WebSocketClient(
+            ws_url=self.ws_url,
+            device_id=DEVICE_ID,
+            client_type="camera"
+        )
         
         # Start WebSocket connection
         self.ws_client.connect()
