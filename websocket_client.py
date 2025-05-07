@@ -111,13 +111,8 @@ class WebSocketClient:
         self.ws_connected = True
         self.last_ws_status = "Connected"
         
-        try:
-            # Send device ID as the first message
-            self.ws.send(self.device_id)
-            logger.info(f"Sent device ID {self.device_id} to {self.client_type} server")
-        except Exception as e:
-            logger.error(f"Error sending device ID to {self.client_type} server: {e}")
-            logger.error(traceback.format_exc())
+        # Don't send any initial message - the server doesn't expect one
+        # The client_id is already in the URL path and the server will extract it from there
 
     def connect(self):
         """
