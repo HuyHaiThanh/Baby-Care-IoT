@@ -22,7 +22,7 @@ USE_NGROK_FOR_IMAGE = True           # Sử dụng ngrok cho server hình ảnh
 USE_NGROK_FOR_AUDIO = True          # Sử dụng ngrok cho server âm thanh
 
 # URL ngrok (chỉ cần điền nếu USE_NGROK = True)
-IMAGE_NGROK_URL = "c65e-117-2-255-206.ngrok-free.app"
+IMAGE_NGROK_URL = "9567-1-53-82-6.ngrok-free.app"
 AUDIO_NGROK_URL = "ce8f-2401-d800-57ef-2bbf-1475-8f37-6cd5-8f53.ngrok-free.app"
 
 #==============================================================
