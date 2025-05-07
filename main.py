@@ -137,58 +137,117 @@ def main():
     try:
         # Import các module cần thiết cho cấu hình kết nối
         import json
+        import re
+        from urllib.parse import urlparse
         from config import CONNECTION_CONFIG, save_connection_config
+        
+        # Function to parse different server address formats
+        def parse_server_address(address):
+            """
+            Parse server address in various formats:
+            - IP:port (e.g., 192.168.1.10:8080)
+            - hostname:port (e.g., example.com:8080)
+            - Full URL (e.g., http://example.com:8080, https://xxxx-xx-xx-xx.ngrok-free.app)
+            
+            Returns a tuple of (host, port, use_ngrok, use_ssl)
+            """
+            use_ngrok = False
+            use_ssl = False
+            
+            # Check if it's a full URL with protocol
+            if "://" in address:
+                parsed_url = urlparse(address)
+                protocol = parsed_url.scheme
+                use_ssl = (protocol == 'https')
+                
+                # Check if it's an ngrok URL
+                if 'ngrok' in parsed_url.netloc:
+                    use_ngrok = True
+                
+                # Extract host and path
+                host = parsed_url.netloc
+                
+                # Extract port if specified in URL
+                if ':' in host:
+                    host, port_str = host.split(':', 1)
+                    # Handle case where port may include path
+                    port_str = port_str.split('/', 1)[0]
+                    port = int(port_str)
+                else:
+                    # Use default ports based on protocol
+                    port = 443 if use_ssl else 80
+                
+                return host, port, use_ngrok, use_ssl
+            
+            # Handle IP:port or hostname:port format
+            elif ':' in address:
+                host, port_str = address.split(':', 1)
+                port = int(port_str)
+                
+                # Check if it might be an ngrok hostname without protocol
+                if 'ngrok' in host:
+                    use_ngrok = True
+                    use_ssl = True  # Ngrok usually uses HTTPS
+                
+                return host, port, use_ngrok, use_ssl
+            
+            # Just a hostname or IP without port
+            else:
+                host = address
+                # Check if it might be an ngrok hostname without protocol
+                if 'ngrok' in host:
+                    use_ngrok = True
+                    use_ssl = True
+                    port = 443  # HTTPS default port
+                else:
+                    port = 80  # HTTP default port
+                
+                return host, port, use_ngrok, use_ssl
         
         # Xử lý các tham số server tùy chọn
         # Kiểm tra nếu người dùng đã nhập địa chỉ server hình ảnh
         if args.image_server:
             print(f"\n>> Đang cấu hình kết nối đến server hình ảnh: {args.image_server}")
             
-            # Tách host và port từ chuỗi nhập vào (định dạng host:port)
-            if ":" in args.image_server:
-                host, port = args.image_server.split(":")
-                port = int(port)
-                
-                # Cập nhật cấu hình server hình ảnh
-                CONNECTION_CONFIG["image_server"]["use_ngrok"] = False
-                CONNECTION_CONFIG["image_server"]["local_host"] = host
-                CONNECTION_CONFIG["image_server"]["local_port"] = port
-                
+            # Parse the provided address
+            host, port, use_ngrok, use_ssl = parse_server_address(args.image_server)
+            
+            # Cập nhật cấu hình server hình ảnh
+            CONNECTION_CONFIG["image_server"]["use_ngrok"] = use_ngrok
+            CONNECTION_CONFIG["image_server"]["local_host"] = host
+            CONNECTION_CONFIG["image_server"]["local_port"] = port
+            CONNECTION_CONFIG["image_server"]["use_ssl"] = use_ssl
+            
+            # Nếu là URL ngrok, cập nhật ngrok_url
+            if use_ngrok:
+                CONNECTION_CONFIG["image_server"]["ngrok_url"] = host
+                print(f"  - Đã phát hiện địa chỉ ngrok: {host}")
+                print(f"  - Sử dụng HTTPS: {'Có' if use_ssl else 'Không'}")
+            else:
                 print(f"  - Host: {host}")
                 print(f"  - Port: {port}")
-            else:
-                # Nếu chỉ có host, sử dụng port mặc định 80
-                CONNECTION_CONFIG["image_server"]["use_ngrok"] = False
-                CONNECTION_CONFIG["image_server"]["local_host"] = args.image_server
-                CONNECTION_CONFIG["image_server"]["local_port"] = 80
-                
-                print(f"  - Host: {args.image_server}")
-                print(f"  - Port: 80 (mặc định)")
         
         # Kiểm tra nếu người dùng đã nhập địa chỉ server âm thanh
         if args.audio_server:
             print(f"\n>> Đang cấu hình kết nối đến server âm thanh: {args.audio_server}")
             
-            # Tách host và port từ chuỗi nhập vào (định dạng host:port)
-            if ":" in args.audio_server:
-                host, port = args.audio_server.split(":")
-                port = int(port)
-                
-                # Cập nhật cấu hình server âm thanh
-                CONNECTION_CONFIG["audio_server"]["use_ngrok"] = False
-                CONNECTION_CONFIG["audio_server"]["local_host"] = host
-                CONNECTION_CONFIG["audio_server"]["local_port"] = port
-                
+            # Parse the provided address
+            host, port, use_ngrok, use_ssl = parse_server_address(args.audio_server)
+            
+            # Cập nhật cấu hình server âm thanh
+            CONNECTION_CONFIG["audio_server"]["use_ngrok"] = use_ngrok
+            CONNECTION_CONFIG["audio_server"]["local_host"] = host
+            CONNECTION_CONFIG["audio_server"]["local_port"] = port
+            CONNECTION_CONFIG["audio_server"]["use_ssl"] = use_ssl
+            
+            # Nếu là URL ngrok, cập nhật ngrok_url
+            if use_ngrok:
+                CONNECTION_CONFIG["audio_server"]["ngrok_url"] = host
+                print(f"  - Đã phát hiện địa chỉ ngrok: {host}")
+                print(f"  - Sử dụng HTTPS: {'Có' if use_ssl else 'Không'}")
+            else:
                 print(f"  - Host: {host}")
                 print(f"  - Port: {port}")
-            else:
-                # Nếu chỉ có host, sử dụng port mặc định 80
-                CONNECTION_CONFIG["audio_server"]["use_ngrok"] = False
-                CONNECTION_CONFIG["audio_server"]["local_host"] = args.audio_server
-                CONNECTION_CONFIG["audio_server"]["local_port"] = 80
-                
-                print(f"  - Host: {args.audio_server}")
-                print(f"  - Port: 80 (mặc định)")
         
         # Lưu cấu hình mới vào file
         print("\n>> Đang lưu cấu hình kết nối...")
