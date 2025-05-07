@@ -82,9 +82,9 @@ class AudioRecorder:
         
         # Get the most up-to-date WebSocket URL
         # This ensures we use any command-line configuration changes
-        # Modified URL structure - don't append device_id as a path but as a query parameter
+        # Use path parameter format for device_id as requested
         base_ws_url = get_ws_url('audio')
-        self.ws_url = f"{base_ws_url}?device_id={DEVICE_ID}"
+        self.ws_url = f"{base_ws_url}/{DEVICE_ID}"
         logger.info(f"Connecting to audio WebSocket at {self.ws_url}")
         
         # Create WebSocket client with the updated URL

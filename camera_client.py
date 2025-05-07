@@ -87,9 +87,9 @@ class CameraClient:
         self.running = True
         
         # Get the most up-to-date WebSocket URL
-        # Using query parameter for device_id like we did for audio client
+        # Use path parameter format for device_id as requested
         base_ws_url = get_ws_url('image')
-        self.ws_url = f"{base_ws_url}?device_id={DEVICE_ID}"
+        self.ws_url = f"{base_ws_url}/{DEVICE_ID}"
         logger.info(f"Connecting to image WebSocket at {self.ws_url}")
         
         # Create WebSocket client with the updated URL
