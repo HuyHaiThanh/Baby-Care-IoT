@@ -61,38 +61,70 @@ class VideoStreamManager:
         self.ip_address = get_ip_address()
         self.virtual_device_created = False
     
+    def check_v4l2loopback_installed(self):
+        """Kiểm tra xem v4l2loopback đã được cài đặt chưa"""
+        try:
+            # Kiểm tra xem module có sẵn sàng để nạp không
+            check_available = subprocess.run(["modinfo", "v4l2loopback"], 
+                                          capture_output=True, text=True)
+            if check_available.returncode == 0:
+                return True
+                
+            # Nếu không có sẵn, kiểm tra xem gói có được cài đặt không
+            check_installed = subprocess.run(["dpkg", "-s", "v4l2loopback-dkms"], 
+                                         capture_output=True, text=True)
+            if check_installed.returncode == 0:
+                return True
+                
+            # Cố gắng cài đặt
+            logger.warning("v4l2loopback chưa được cài đặt. Cố gắng cài đặt...")
+            subprocess.run(["sudo", "apt-get", "update", "-y"], capture_output=True)
+            install_result = subprocess.run(["sudo", "apt-get", "install", "-y", "v4l2loopback-dkms", "v4l2loopback-utils"], 
+                                         capture_output=True, text=True)
+            
+            if install_result.returncode == 0:
+                logger.info("Đã cài đặt v4l2loopback thành công")
+                return True
+            else:
+                logger.error(f"Không thể cài đặt v4l2loopback: {install_result.stderr}")
+                return False
+        except Exception as e:
+            logger.error(f"Lỗi khi kiểm tra v4l2loopback: {str(e)}")
+            return False
+    
+    def find_available_video_device(self):
+        """Tìm một số thiết bị video khả dụng"""
+        for i in range(10, 30):  # Thử từ video10 đến video29
+            device_path = f"/dev/video{i}"
+            if not os.path.exists(device_path):
+                return device_path, i
+        return "/dev/video10", 10  # Mặc định nếu không tìm thấy
+    
     def setup_v4l2loopback(self):
         """
         Thiết lập v4l2loopback để tạo thiết bị ảo
         """
         try:
-            # Đảm bảo đã cài đặt v4l2loopback
-            check_installed = subprocess.run(["dpkg", "-s", "v4l2loopback-dkms"], 
-                                          capture_output=True, text=True)
-            if check_installed.returncode != 0:
-                logger.warning("v4l2loopback chưa được cài đặt. Cố gắng cài đặt...")
-                subprocess.run(["sudo", "apt-get", "update", "-y"], capture_output=True)
-                subprocess.run(["sudo", "apt-get", "install", "-y", "v4l2loopback-dkms"], 
-                             capture_output=True)
-                time.sleep(2)
+            # Kiểm tra xem v4l2loopback đã được cài đặt chưa
+            if not self.check_v4l2loopback_installed():
+                logger.error("v4l2loopback không được cài đặt. Không thể tiếp tục với thiết bị ảo.")
+                return False
             
             # Xóa tất cả các module v4l2loopback hiện tại trước để tránh xung đột
             subprocess.run(["sudo", "modprobe", "-r", "v4l2loopback"], 
                            capture_output=True, text=True)
             time.sleep(1)
             
-            # Lấy số thiết bị từ đường dẫn, ví dụ: /dev/video10 -> 10
-            try:
-                device_number = re.search(r'(\d+)$', self.virtual_device).group(1)
-            except (AttributeError, IndexError):
-                device_number = "10"  # Mặc định là 10 nếu không phân tích được
+            # Tìm một thiết bị khả dụng
+            self.virtual_device, device_number = self.find_available_video_device()
+            logger.info(f"Sử dụng thiết bị ảo: {self.virtual_device}")
             
             # Nạp module v4l2loopback với các tùy chọn đúng
             logger.info("Đang nạp module v4l2loopback...")
             cmd = [
                 "sudo", "modprobe", "v4l2loopback",
                 f"video_nr={device_number}",
-                "exclusive_caps=0",
+                "exclusive_caps=1",  # Đặt 1 để thiết bị hoạt động như camera thực
                 "card_label=\"Virtual Camera\"",
                 "max_buffers=2"
             ]
@@ -109,22 +141,53 @@ class VideoStreamManager:
                 logger.error(f"Thiết bị ảo {self.virtual_device} không được tạo thành công")
                 return False
             
-            # Kiểm tra loại thiết bị để đảm bảo đó là thiết bị v4l2loopback
+            # Kiểm tra loại thiết bị sử dụng v4l2-ctl
             try:
-                device_info = subprocess.run(["v4l2-ctl", "-d", self.virtual_device, "--all"], 
+                device_info = subprocess.run(["v4l2-ctl", "-d", self.virtual_device, "--info"], 
                                           capture_output=True, text=True)
-                if "Driver name" in device_info.stdout and "v4l2loopback" in device_info.stdout:
-                    logger.info(f"Thông tin thiết bị ảo:\n{device_info.stdout}")
+                
+                if "Driver name: v4l2loopback" in device_info.stdout:
+                    logger.info(f"Thông tin thiết bị ảo: {device_info.stdout.strip()}")
                     self.virtual_device_created = True
                 else:
-                    logger.warning(f"Thiết bị {self.virtual_device} không phải là thiết bị v4l2loopback")
-                    return False
+                    # Thử lấy thông tin chi tiết hơn
+                    device_caps = subprocess.run(["v4l2-ctl", "-d", self.virtual_device, "--all"], 
+                                            capture_output=True, text=True)
+                    logger.info(f"Thông tin thiết bị: {device_caps.stdout.strip()}")
+                    
+                    if "v4l2loopback" in device_caps.stdout:
+                        self.virtual_device_created = True
+                        logger.info(f"Thiết bị ảo {self.virtual_device} đã được tạo thành công")
+                    else:
+                        logger.warning(f"Thiết bị {self.virtual_device} không phải là thiết bị v4l2loopback")
+                        return False
             except Exception as e:
                 logger.error(f"Không thể kiểm tra thông tin thiết bị: {str(e)}")
                 return False
-                
-            logger.info(f"Thiết bị ảo {self.virtual_device} đã được tạo thành công")
-            return True
+            
+            if self.virtual_device_created:
+                # Kiểm tra khả năng sử dụng của thiết bị
+                try:
+                    # Thử mở thiết bị để ghi để đảm bảo nó hoạt động
+                    test_cmd = [
+                        "ffmpeg", "-f", "lavfi", "-i", "testsrc=duration=1:size=640x480:rate=30", 
+                        "-f", "v4l2", self.virtual_device
+                    ]
+                    test_result = subprocess.run(test_cmd, capture_output=True, text=True)
+                    
+                    if test_result.returncode != 0:
+                        if "Device or resource busy" in test_result.stderr:
+                            logger.warning(f"Thiết bị {self.virtual_device} đang bận, nhưng có thể đã được tạo thành công")
+                            return True
+                        else:
+                            logger.warning(f"Kiểm tra ghi thiết bị thất bại: {test_result.stderr}")
+                            return False
+                except Exception as e:
+                    logger.warning(f"Lỗi khi kiểm tra thiết bị: {str(e)}")
+                    # Tiếp tục dù có lỗi kiểm tra
+            
+            logger.info(f"Thiết bị ảo {self.virtual_device} đã sẵn sàng")
+            return self.virtual_device_created
         except Exception as e:
             logger.error(f"Lỗi khi thiết lập v4l2loopback: {str(e)}")
             return False
@@ -185,14 +248,17 @@ class VideoStreamManager:
                 time.sleep(2)  # Đợi giải phóng thiết bị
             
             # Sử dụng ffmpeg để sao chép từ camera thực sang thiết bị ảo
-            # Tránh chỉ định input_format để ffmpeg tự phát hiện
+            # Tránh sử dụng rawvideo vì có thể gây lỗi với một số thiết bị v4l2loopback
             command = [
                 "ffmpeg", 
                 "-f", "v4l2", 
                 "-i", self.video_device,
+                "-vcodec", "copy",  # Sao chép mã hóa để giữ chất lượng và hiệu suất
                 "-f", "v4l2", 
                 self.virtual_device
             ]
+            
+            logger.info("Sử dụng lệnh sao chép: " + " ".join(command))
             
             self.v4l2_process = subprocess.Popen(
                 command, 
@@ -395,7 +461,10 @@ class VideoStreamManager:
         
         # Chỉ cố gắng sao chép video nếu thiết lập v4l2loopback thành công
         if v4l2_setup_success:
-            self.start_video_copying()
+            if self.start_video_copying():
+                logger.info("Sao chép video thành công từ camera thật sang thiết bị ảo")
+            else:
+                logger.warning("Không thể sao chép video sang thiết bị ảo, tiếp tục với thiết bị gốc")
         else:
             logger.warning("Không thể thiết lập v4l2loopback, tiếp tục với thiết bị gốc")
         
@@ -449,6 +518,7 @@ def main():
     parser.add_argument('--height', type=int, default=480, help='Chiều cao video')
     parser.add_argument('--framerate', type=int, default=30, help='Tốc độ khung hình')
     parser.add_argument('--direct', action='store_true', help='Stream trực tiếp từ camera vật lý, không dùng virtual device')
+    parser.add_argument('--no-v4l2', action='store_true', help='Bỏ qua thiết lập v4l2loopback và stream trực tiếp')
     
     args = parser.parse_args()
     
@@ -472,7 +542,7 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     
     try:
-        if args.direct:
+        if args.direct or args.no_v4l2:
             # Streaming trực tiếp với cấu hình từ câu lệnh đã cung cấp
             logger.info("Bắt đầu streaming trực tiếp từ camera vật lý...")
             command = [
