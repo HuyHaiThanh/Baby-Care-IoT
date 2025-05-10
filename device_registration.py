@@ -9,13 +9,14 @@ from datetime import datetime
 import socket
 
 # Thông tin xác thực Firebase (sẽ thay thế bằng thông tin thực tế của bạn)
-API_KEY = "AIzaSyBGS8Ce_W4i91LXiR3ZcFp_QN5FOfojHhQ"
-EMAIL = "iotuser01@email.com"
-PASSWORD = "huyhaithanh"
-PROJECT_ID = "babycare-81f74"
+API_KEY = "YOUR_FIREBASE_API_KEY"
+EMAIL = "YOUR_EMAIL@example.com"
+PASSWORD = "YOUR_PASSWORD"
+PROJECT_ID = "YOUR_PROJECT_ID"
 
 # URL cho các API của Firebase
 FIREBASE_AUTH_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={API_KEY}"
+# URL chính xác cho Firestore API
 FIREBASE_FIRESTORE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
 
 def get_device_id():
@@ -53,17 +54,26 @@ def authenticate_firebase():
         "returnSecureToken": True
     }
     
-    response = requests.post(FIREBASE_AUTH_URL, json=auth_data)
-    
-    if response.status_code != 200:
-        print(f"Lỗi xác thực: {response.text}")
+    try:
+        print("Đang xác thực với Firebase...")
+        response = requests.post(FIREBASE_AUTH_URL, json=auth_data)
+        
+        # Hiển thị chi tiết phản hồi để gỡ lỗi
+        print(f"Mã trạng thái xác thực: {response.status_code}")
+        
+        if response.status_code != 200:
+            print(f"Lỗi xác thực: {response.text}")
+            return None
+        
+        auth_result = response.json()
+        id_token = auth_result.get("idToken")
+        user_id = auth_result.get("localId")
+        
+        print("Xác thực thành công!")
+        return id_token, user_id
+    except Exception as e:
+        print(f"Lỗi khi xác thực: {str(e)}")
         return None
-    
-    auth_result = response.json()
-    id_token = auth_result.get("idToken")
-    user_id = auth_result.get("localId")
-    
-    return id_token, user_id
 
 def register_device(id_token, user_id):
     """
@@ -84,9 +94,8 @@ def register_device(id_token, user_id):
         }
     }
     
-    # URL của collection "connections" với document ID = device_id
-    collection_url = f"{FIREBASE_FIRESTORE_URL}/connections"
-    document_url = f"{collection_url}/{device_id}"
+    # Tạo URL chính xác cho collection và document
+    document_url = f"{FIREBASE_FIRESTORE_URL}/connections/{device_id}"
     
     # Header với ID token
     headers = {
@@ -94,33 +103,60 @@ def register_device(id_token, user_id):
         "Content-Type": "application/json"
     }
     
-    # Kiểm tra xem thiết bị đã đăng ký chưa
     try:
+        print(f"Kiểm tra thiết bị với ID: {device_id}")
+        print(f"URL yêu cầu: {document_url}")
+        
+        # Kiểm tra xem thiết bị đã đăng ký chưa
         check_response = requests.get(document_url, headers=headers)
+        print(f"Mã phản hồi kiểm tra: {check_response.status_code}")
         
         if check_response.status_code == 200:
             print(f"Thiết bị với ID {device_id} đã được đăng ký trước đó.")
             return True
         
-        # Nếu không tìm thấy (404), tiếp tục tạo mới
-        if check_response.status_code != 404:
-            print(f"Lỗi khi kiểm tra thiết bị: {check_response.text}")
-    except Exception as e:
-        print(f"Lỗi khi kiểm tra thiết bị: {str(e)}")
-    
-    # Đăng ký thiết bị mới với ID được chỉ định
-    try:
-        # Sử dụng PUT để tạo document với ID đã xác định
-        response = requests.put(document_url, json=device_data, headers=headers)
+        # Nếu document chưa tồn tại, tạo mới
+        print(f"Tạo document mới với ID: {device_id}")
         
-        if response.status_code == 200 or response.status_code == 201:
+        # Sử dụng phương thức POST cho collection
+        collection_url = f"{FIREBASE_FIRESTORE_URL}/connections"
+        document_data = {
+            "fields": device_data["fields"],
+            "name": f"projects/{PROJECT_ID}/databases/(default)/documents/connections/{device_id}"
+        }
+        response = requests.post(collection_url, json=device_data, headers=headers)
+        
+        print(f"Mã phản hồi đăng ký: {response.status_code}")
+        if response.status_code >= 200 and response.status_code < 300:
             print(f"Đăng ký thiết bị thành công với ID: {device_id}")
             return True
         else:
             print(f"Lỗi khi đăng ký thiết bị: {response.text}")
-            return False
+            
+            # Thử phương pháp thay thế nếu POST không thành công
+            print("Thử phương pháp thay thế...")
+            alt_url = f"{FIREBASE_FIRESTORE_URL}:commit"
+            alt_payload = {
+                "writes": [{
+                    "update": {
+                        "name": f"projects/{PROJECT_ID}/databases/(default)/documents/connections/{device_id}",
+                        "fields": device_data["fields"]
+                    }
+                }]
+            }
+            alt_response = requests.post(alt_url, json=alt_payload, headers=headers)
+            print(f"Mã phản hồi phương pháp thay thế: {alt_response.status_code}")
+            
+            if alt_response.status_code >= 200 and alt_response.status_code < 300:
+                print(f"Đăng ký thiết bị thành công với phương pháp thay thế. ID: {device_id}")
+                return True
+            else:
+                print(f"Lỗi khi sử dụng phương pháp thay thế: {alt_response.text}")
+                return False
     except Exception as e:
         print(f"Lỗi khi đăng ký thiết bị: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def main():
