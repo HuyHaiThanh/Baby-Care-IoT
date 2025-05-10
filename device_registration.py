@@ -84,8 +84,9 @@ def register_device(id_token, user_id):
         }
     }
     
-    # URL của collection "connections"
+    # URL của collection "connections" với document ID = device_id
     collection_url = f"{FIREBASE_FIRESTORE_URL}/connections"
+    document_url = f"{collection_url}/{device_id}"
     
     # Header với ID token
     headers = {
@@ -94,23 +95,32 @@ def register_device(id_token, user_id):
     }
     
     # Kiểm tra xem thiết bị đã đăng ký chưa
-    check_url = f"{collection_url}?orderBy=deviceId&equalTo={device_id}"
-    check_response = requests.get(check_url, headers=headers)
-    
-    if check_response.status_code == 200:
-        documents = check_response.json().get("documents", [])
-        if documents:
+    try:
+        check_response = requests.get(document_url, headers=headers)
+        
+        if check_response.status_code == 200:
             print(f"Thiết bị với ID {device_id} đã được đăng ký trước đó.")
             return True
+        
+        # Nếu không tìm thấy (404), tiếp tục tạo mới
+        if check_response.status_code != 404:
+            print(f"Lỗi khi kiểm tra thiết bị: {check_response.text}")
+    except Exception as e:
+        print(f"Lỗi khi kiểm tra thiết bị: {str(e)}")
     
-    # Đăng ký thiết bị mới
-    response = requests.post(collection_url, json=device_data, headers=headers)
-    
-    if response.status_code == 200 or response.status_code == 201:
-        print(f"Đăng ký thiết bị thành công với ID: {device_id}")
-        return True
-    else:
-        print(f"Lỗi khi đăng ký thiết bị: {response.text}")
+    # Đăng ký thiết bị mới với ID được chỉ định
+    try:
+        # Sử dụng PUT để tạo document với ID đã xác định
+        response = requests.put(document_url, json=device_data, headers=headers)
+        
+        if response.status_code == 200 or response.status_code == 201:
+            print(f"Đăng ký thiết bị thành công với ID: {device_id}")
+            return True
+        else:
+            print(f"Lỗi khi đăng ký thiết bị: {response.text}")
+            return False
+    except Exception as e:
+        print(f"Lỗi khi đăng ký thiết bị: {str(e)}")
         return False
 
 def main():
