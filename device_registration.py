@@ -9,10 +9,10 @@ from datetime import datetime
 import socket
 
 # Thông tin xác thực Firebase (sẽ thay thế bằng thông tin thực tế của bạn)
-API_KEY = "YOUR_FIREBASE_API_KEY"
-EMAIL = "YOUR_EMAIL@example.com"
-PASSWORD = "YOUR_PASSWORD"
-PROJECT_ID = "YOUR_PROJECT_ID"
+API_KEY = "AIzaSyBGS8Ce_W4i91LXiR3ZcFp_QN5FOfojHhQ"
+EMAIL = "iotuser01@email.com"
+PASSWORD = "huyht2004"
+PROJECT_ID = "babycare-81f74"
 
 # URL cho các API của Firebase
 FIREBASE_AUTH_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={API_KEY}"
