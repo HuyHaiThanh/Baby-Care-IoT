@@ -35,7 +35,7 @@ def get_ip_address():
         return "localhost"
 
 class VideoStreamManager:
-    def __init__(self, video_device="/dev/video0", virtual_device="/dev/video1", 
+    def __init__(self, video_device="/dev/video0", virtual_device="/dev/video10", 
                  width=640, height=480, framerate=30):
         """
         Khởi tạo quản lý luồng video
@@ -48,7 +48,7 @@ class VideoStreamManager:
             framerate: Tốc độ khung hình
         """
         self.video_device = video_device
-        self.virtual_device = virtual_device
+        self.virtual_device = virtual_device  # Sử dụng /dev/video10 để tránh xung đột
         self.width = width
         self.height = height
         self.framerate = framerate
@@ -59,42 +59,71 @@ class VideoStreamManager:
         self.copy_lock = threading.Lock()
         self.device_freed = False
         self.ip_address = get_ip_address()
+        self.virtual_device_created = False
     
     def setup_v4l2loopback(self):
         """
         Thiết lập v4l2loopback để tạo thiết bị ảo
         """
         try:
+            # Đảm bảo đã cài đặt v4l2loopback
+            check_installed = subprocess.run(["dpkg", "-s", "v4l2loopback-dkms"], 
+                                          capture_output=True, text=True)
+            if check_installed.returncode != 0:
+                logger.warning("v4l2loopback chưa được cài đặt. Cố gắng cài đặt...")
+                subprocess.run(["sudo", "apt-get", "update", "-y"], capture_output=True)
+                subprocess.run(["sudo", "apt-get", "install", "-y", "v4l2loopback-dkms"], 
+                             capture_output=True)
+                time.sleep(2)
+            
             # Xóa tất cả các module v4l2loopback hiện tại trước để tránh xung đột
             subprocess.run(["sudo", "modprobe", "-r", "v4l2loopback"], 
                            capture_output=True, text=True)
             time.sleep(1)
             
-            # Kiểm tra xem module v4l2loopback đã được nạp chưa
-            result = subprocess.run(["lsmod"], capture_output=True, text=True)
-            if "v4l2loopback" not in result.stdout:
-                logger.info("Đang nạp module v4l2loopback...")
-                # Tạo thiết bị với card_label để dễ nhận dạng và exclusive_caps=0 để cho phép nhiều ứng dụng truy cập
-                subprocess.run([
-                    "sudo", "modprobe", "v4l2loopback",
-                    "exclusive_caps=0",
-                    "card_label=\"Virtual Camera\"", 
-                    "video_nr=1",  # Đặt số thiết bị là 1 (/dev/video1)
-                    "max_buffers=2"
-                ])
-                time.sleep(2)  # Đợi module được nạp
+            # Lấy số thiết bị từ đường dẫn, ví dụ: /dev/video10 -> 10
+            try:
+                device_number = re.search(r'(\d+)$', self.virtual_device).group(1)
+            except (AttributeError, IndexError):
+                device_number = "10"  # Mặc định là 10 nếu không phân tích được
+            
+            # Nạp module v4l2loopback với các tùy chọn đúng
+            logger.info("Đang nạp module v4l2loopback...")
+            cmd = [
+                "sudo", "modprobe", "v4l2loopback",
+                f"video_nr={device_number}",
+                "exclusive_caps=0",
+                "card_label=\"Virtual Camera\"",
+                "max_buffers=2"
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                logger.error(f"Không thể nạp module v4l2loopback: {result.stderr}")
+                return False
+                
+            time.sleep(2)  # Đợi module được nạp
             
             # Kiểm tra xem thiết bị đã được tạo chưa
             if not os.path.exists(self.virtual_device):
                 logger.error(f"Thiết bị ảo {self.virtual_device} không được tạo thành công")
                 return False
             
-            # Kiểm tra loại và khả năng của thiết bị
-            device_info = subprocess.run(["v4l2-ctl", "-d", self.virtual_device, "--all"], 
-                                        capture_output=True, text=True)
-            logger.info(f"Thông tin thiết bị ảo:\n{device_info.stdout}")
+            # Kiểm tra loại thiết bị để đảm bảo đó là thiết bị v4l2loopback
+            try:
+                device_info = subprocess.run(["v4l2-ctl", "-d", self.virtual_device, "--all"], 
+                                          capture_output=True, text=True)
+                if "Driver name" in device_info.stdout and "v4l2loopback" in device_info.stdout:
+                    logger.info(f"Thông tin thiết bị ảo:\n{device_info.stdout}")
+                    self.virtual_device_created = True
+                else:
+                    logger.warning(f"Thiết bị {self.virtual_device} không phải là thiết bị v4l2loopback")
+                    return False
+            except Exception as e:
+                logger.error(f"Không thể kiểm tra thông tin thiết bị: {str(e)}")
+                return False
                 
-            logger.info(f"Thiết bị ảo {self.virtual_device} đã sẵn sàng")
+            logger.info(f"Thiết bị ảo {self.virtual_device} đã được tạo thành công")
             return True
         except Exception as e:
             logger.error(f"Lỗi khi thiết lập v4l2loopback: {str(e)}")
@@ -135,6 +164,10 @@ class VideoStreamManager:
         """
         Bắt đầu sao chép luồng video từ thiết bị thật sang thiết bị ảo
         """
+        if not self.virtual_device_created:
+            logger.warning("Không thể sao chép video vì thiết bị ảo không tồn tại")
+            return False
+            
         if self.v4l2_process:
             return True
             
@@ -152,14 +185,12 @@ class VideoStreamManager:
                 time.sleep(2)  # Đợi giải phóng thiết bị
             
             # Sử dụng ffmpeg để sao chép từ camera thực sang thiết bị ảo
+            # Tránh chỉ định input_format để ffmpeg tự phát hiện
             command = [
                 "ffmpeg", 
                 "-f", "v4l2", 
-                "-input_format", "mjpeg",  # Chỉ định định dạng đầu vào
                 "-i", self.video_device,
-                "-pix_fmt", "yuv420p",
                 "-f", "v4l2", 
-                "-vcodec", "rawvideo",  # Sử dụng rawvideo để tương thích tốt hơn
                 self.virtual_device
             ]
             
@@ -193,7 +224,7 @@ class VideoStreamManager:
             if self.v4l2_process:
                 self.v4l2_process.terminate()
                 self.v4l2_process = None
-            return self.start_video_copying_alternative()
+            return False
 
     def start_video_copying_alternative(self):
         """
@@ -359,12 +390,14 @@ class VideoStreamManager:
             logger.info("Dịch vụ đã đang chạy")
             return True
         
-        if not self.setup_v4l2loopback():
-            logger.warning("Không thể thiết lập v4l2loopback, tiếp tục với thiết bị gốc")
-            # Tiếp tục ngay cả khi không thiết lập được v4l2loopback
-        else:
-            # Cố gắng sao chép video sang thiết bị ảo (không bắt buộc thành công)
+        # Cố gắng thiết lập v4l2loopback nhưng không bắt buộc thành công
+        v4l2_setup_success = self.setup_v4l2loopback()
+        
+        # Chỉ cố gắng sao chép video nếu thiết lập v4l2loopback thành công
+        if v4l2_setup_success:
             self.start_video_copying()
+        else:
+            logger.warning("Không thể thiết lập v4l2loopback, tiếp tục với thiết bị gốc")
         
         # Streaming là bước quan trọng nhất
         if not self.start_streaming():
@@ -411,7 +444,7 @@ def main():
     """Hàm chính để chạy dịch vụ streaming"""
     parser = argparse.ArgumentParser(description='Video streaming với v4l2loopback')
     parser.add_argument('--physical-device', default='/dev/video0', help='Thiết bị camera vật lý')
-    parser.add_argument('--virtual-device', default='/dev/video1', help='Thiết bị camera ảo')
+    parser.add_argument('--virtual-device', default='/dev/video10', help='Thiết bị camera ảo')
     parser.add_argument('--width', type=int, default=640, help='Chiều rộng video')
     parser.add_argument('--height', type=int, default=480, help='Chiều cao video')
     parser.add_argument('--framerate', type=int, default=30, help='Tốc độ khung hình')
@@ -469,10 +502,7 @@ def main():
         else:
             # Sử dụng virtual device để chia sẻ camera
             if manager.start():
-                # Hiển thị URL stream
-                stream_url = f"http://{ip_address}/playlist.m3u8"
-                logger.info(f"Dịch vụ đã bắt đầu thành công. HLS stream có sẵn tại {stream_url}")
-                
+                # Không hiển thị URL lần thứ hai vì đã hiển thị trong manager.start()
                 # Giữ cho chương trình chạy
                 while manager.running:
                     time.sleep(1)
