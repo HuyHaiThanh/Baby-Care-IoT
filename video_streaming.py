@@ -7,6 +7,7 @@ import subprocess
 import signal
 import argparse
 import logging
+import threading
 
 # Thiết lập logging
 logging.basicConfig(
@@ -39,6 +40,9 @@ class VideoStreamManager:
         self.v4l2_process = None
         self.streaming_process = None
         self.running = False
+        self.copy_completed = False
+        self.copy_lock = threading.Lock()
+        self.device_freed = False
     
     def setup_v4l2loopback(self):
         """
@@ -49,10 +53,10 @@ class VideoStreamManager:
             result = subprocess.run(["lsmod"], capture_output=True, text=True)
             if "v4l2loopback" not in result.stdout:
                 logger.info("Đang nạp module v4l2loopback...")
-                # Tạo thiết bị với card_label để dễ dàng xác định và cho phép capture
+                # Tạo thiết bị với card_label để dễ nhận dạng và exclusive_caps=0 để cho phép nhiều ứng dụng truy cập
                 subprocess.run([
                     "sudo", "modprobe", "v4l2loopback",
-                    "exclusive_caps=0",  # Cho phép nhiều ứng dụng truy cập
+                    "exclusive_caps=0",
                     "card_label='Virtual Camera'", 
                     "video_nr=1"  # Đặt số thiết bị là 1 (/dev/video1)
                 ])
@@ -69,6 +73,37 @@ class VideoStreamManager:
             logger.error(f"Lỗi khi thiết lập v4l2loopback: {str(e)}")
             return False
     
+    def free_physical_device(self):
+        """
+        Giải phóng thiết bị camera vật lý để các tiến trình khác có thể sử dụng
+        """
+        if self.copy_completed and not self.device_freed:
+            logger.info(f"Đang giải phóng thiết bị vật lý {self.video_device}...")
+            
+            if self.v4l2_process:
+                logger.info("Dừng tiến trình sao chép video để giải phóng thiết bị vật lý")
+                self.v4l2_process.terminate()
+                try:
+                    self.v4l2_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.v4l2_process.kill()
+                self.v4l2_process = None
+            
+            # Giải phóng thiết bị vật lý nếu có tiến trình nào đang sử dụng
+            try:
+                check_busy = subprocess.run(["fuser", "-v", self.video_device], 
+                                          capture_output=True, text=True)
+                
+                if check_busy.returncode == 0:  # Có tiến trình đang sử dụng
+                    subprocess.run(["sudo", "fuser", "-k", self.video_device], 
+                                 capture_output=True, text=True)
+                    time.sleep(1)
+            except Exception as e:
+                logger.error(f"Lỗi khi giải phóng thiết bị: {str(e)}")
+            
+            self.device_freed = True
+            logger.info(f"Thiết bị vật lý {self.video_device} đã được giải phóng")
+    
     def start_video_copying(self):
         """
         Bắt đầu sao chép luồng video từ thiết bị thật sang thiết bị ảo
@@ -79,6 +114,16 @@ class VideoStreamManager:
         logger.info(f"Bắt đầu sao chép video từ {self.video_device} sang {self.virtual_device}")
         
         try:
+            # Kiểm tra xem có tiến trình nào đang sử dụng camera không
+            check_busy = subprocess.run(["fuser", "-v", self.video_device], 
+                                      capture_output=True, text=True)
+            
+            if check_busy.returncode == 0:  # Có tiến trình đang sử dụng
+                logger.warning(f"Camera {self.video_device} đang được sử dụng bởi tiến trình khác. Thử giải phóng...")
+                subprocess.run(["sudo", "fuser", "-k", self.video_device], 
+                             capture_output=True, text=True)
+                time.sleep(2)  # Đợi giải phóng thiết bị
+            
             # Sử dụng ffmpeg để sao chép từ camera thực sang thiết bị ảo
             command = [
                 "ffmpeg", 
@@ -96,7 +141,7 @@ class VideoStreamManager:
                 stderr=subprocess.PIPE
             )
             
-            time.sleep(3)  # Đợi lâu hơn để ffmpeg thiết lập đầy đủ
+            time.sleep(3)  # Đợi để ffmpeg thiết lập đầy đủ
             
             if self.v4l2_process.poll() is not None:
                 # Nếu process đã kết thúc, có lỗi
@@ -104,6 +149,11 @@ class VideoStreamManager:
                 logger.error(f"Không thể sao chép video: {stderr.decode()}")
                 self.v4l2_process = None
                 return False
+            
+            # Thiết lập cờ copy_completed và chạy một thread để giải phóng thiết bị vật lý
+            # sau một khoảng thời gian ngắn
+            self.copy_completed = True
+            threading.Timer(5.0, self.free_physical_device).start()
                 
             logger.info("Video đang được sao chép thành công")
             return True
@@ -117,31 +167,34 @@ class VideoStreamManager:
     
     def start_streaming(self):
         """
-        Bắt đầu streaming HLS từ thiết bị ảo hoặc vật lý
+        Bắt đầu streaming HLS từ thiết bị ảo
         """
         if self.streaming_process:
             return True
             
-        logger.info(f"Bắt đầu streaming HLS từ camera")
+        logger.info(f"Bắt đầu streaming HLS từ thiết bị ảo {self.virtual_device}")
         
         try:
             # Đảm bảo thư mục đầu ra tồn tại
             os.makedirs(HLS_OUTPUT_DIR, exist_ok=True)
             
-            # Sử dụng thiết bị vật lý thay vì thiết bị ảo để streaming
-            # Điều này tránh các vấn đề với việc thiết bị ảo không hoạt động như thiết bị capture
+            # Đợi để đảm bảo thiết bị ảo đã sẵn sàng
+            time.sleep(1)
+            
+            # Sử dụng ffmpeg để streaming từ thiết bị ảo
             command = [
-                "gst-launch-1.0",
-                "v4l2src", f"device={self.video_device}", "!", 
-                f"video/x-raw,width={self.width},height={self.height},framerate={self.framerate}/1", "!",
-                "videoconvert", "!",
-                "x264enc", "tune=zerolatency", "bitrate=512", "speed-preset=ultrafast", "key-int-max=30", "!", 
-                "mpegtsmux", "!",
-                "hlssink", 
-                f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
-                f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
-                "target-duration=2", 
-                "max-files=3"
+                "ffmpeg", 
+                "-f", "v4l2", 
+                "-i", self.virtual_device,  # Sử dụng thiết bị ảo
+                "-c:v", "libx264", 
+                "-preset", "ultrafast",
+                "-tune", "zerolatency",
+                "-b:v", "512k",
+                "-f", "hls", 
+                "-hls_time", "2", 
+                "-hls_list_size", "3", 
+                "-hls_flags", "delete_segments",
+                f"{HLS_OUTPUT_DIR}/playlist.m3u8"
             ]
             
             logger.info("Sử dụng lệnh: " + " ".join(command))
@@ -152,14 +205,12 @@ class VideoStreamManager:
                 stderr=subprocess.PIPE
             )
             
-            time.sleep(3)  # Đợi để GStreamer bắt đầu
+            time.sleep(3)  # Đợi để ffmpeg bắt đầu
             
             if self.streaming_process.poll() is not None:
                 # Nếu process đã kết thúc, có lỗi
                 stdout, stderr = self.streaming_process.communicate()
                 logger.error(f"Không thể bắt đầu streaming: {stderr.decode()}")
-                
-                # Thử phương pháp thay thế nếu cách đầu không hoạt động
                 return self.start_streaming_alternative()
             
             logger.info(f"Streaming HLS đã bắt đầu thành công: http://[YOUR-PI-IP]{HLS_OUTPUT_DIR}/playlist.m3u8")
@@ -170,33 +221,31 @@ class VideoStreamManager:
             if self.streaming_process:
                 self.streaming_process.terminate()
                 self.streaming_process = None
-            
-            # Thử phương pháp thay thế
             return self.start_streaming_alternative()
     
     def start_streaming_alternative(self):
         """
-        Phương pháp thay thế để streaming khi phương pháp đầu tiên thất bại
-        Sử dụng lệnh ffmpeg thay vì gstreamer
+        Phương pháp thay thế để streaming nếu phương pháp đầu tiên thất bại
         """
         logger.info("Đang thử phương pháp thay thế để streaming...")
         
         try:
+            # Sử dụng GStreamer thay vì ffmpeg để thử streaming từ thiết bị ảo
             command = [
-                "ffmpeg", 
-                "-f", "v4l2", 
-                "-i", self.video_device, 
-                "-input_format", "mjpeg",
-                "-s", f"{self.width}x{self.height}",
-                "-c:v", "copy",
-                "-f", "hls", 
-                "-hls_time", "2", 
-                "-hls_list_size", "3", 
-                "-hls_flags", "delete_segments",
-                f"{HLS_OUTPUT_DIR}/playlist.m3u8"
+                "gst-launch-1.0",
+                "v4l2src", f"device={self.virtual_device}", "!", 
+                "video/x-raw", "!", 
+                "videoconvert", "!",
+                "x264enc", "tune=zerolatency", "bitrate=512", "speed-preset=ultrafast", "!", 
+                "mpegtsmux", "!",
+                "hlssink", 
+                f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
+                f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
+                "target-duration=2", 
+                "max-files=3"
             ]
             
-            logger.info("Sử dụng lệnh ffmpeg: " + " ".join(command))
+            logger.info("Sử dụng lệnh GStreamer từ thiết bị ảo: " + " ".join(command))
             
             self.streaming_process = subprocess.Popen(
                 command,
@@ -208,15 +257,73 @@ class VideoStreamManager:
             
             if self.streaming_process.poll() is not None:
                 stdout, stderr = self.streaming_process.communicate()
-                logger.error(f"Phương pháp thay thế thất bại: {stderr.decode()}")
-                self.streaming_process = None
-                return False
+                logger.error(f"Phương pháp thay thế cũng thất bại: {stderr.decode()}")
+                
+                # Nếu streaming từ thiết bị ảo thất bại, 
+                # thử sử dụng thiết bị gốc (chỉ khi thực sự cần thiết)
+                logger.info("Thử phương pháp cuối cùng với thiết bị gốc...")
+                return self.stream_from_original_device()
             
-            logger.info(f"Streaming HLS với ffmpeg thành công: http://[YOUR-PI-IP]{HLS_OUTPUT_DIR}/playlist.m3u8")
+            logger.info(f"Streaming HLS đã bắt đầu thành công với phương pháp thay thế")
             return True
             
         except Exception as e:
             logger.error(f"Lỗi khi sử dụng phương pháp thay thế: {str(e)}")
+            if self.streaming_process:
+                self.streaming_process.terminate()
+                self.streaming_process = None
+            return self.stream_from_original_device()
+    
+    def stream_from_original_device(self):
+        """
+        Phương pháp cuối cùng - streaming trực tiếp từ thiết bị gốc
+        Chỉ sử dụng khi các phương pháp khác đều thất bại
+        """
+        logger.warning("Chuyển sang sử dụng thiết bị gốc để streaming (không khuyến nghị)")
+        
+        try:
+            # Dừng tiến trình sao chép
+            self.stop_video_copying()
+            
+            # Giải phóng thiết bị gốc
+            subprocess.run(["sudo", "fuser", "-k", self.video_device], capture_output=True)
+            time.sleep(2)
+            
+            # Sử dụng lệnh GStreamer gốc nhưng thêm sudo để đảm bảo quyền truy cập
+            command = [
+                "sudo", "gst-launch-1.0",
+                "v4l2src", f"device={self.video_device}", "!", 
+                f"image/jpeg,width={self.width},height={self.height},framerate={self.framerate}/1", "!",
+                "jpegdec", "!",
+                "x264enc", "tune=zerolatency", "bitrate=512", "speed-preset=ultrafast", "key-int-max=30", "!", 
+                "mpegtsmux", "!",
+                "hlssink", 
+                f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
+                f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
+                "target-duration=2", 
+                "max-files=3"
+            ]
+            
+            logger.info("Sử dụng lệnh gốc: " + " ".join(command))
+            
+            self.streaming_process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            
+            time.sleep(3)
+            
+            if self.streaming_process.poll() is not None:
+                stdout, stderr = self.streaming_process.communicate()
+                logger.error(f"Tất cả các phương pháp đều thất bại: {stderr.decode()}")
+                return False
+            
+            logger.info(f"Streaming HLS đã bắt đầu với thiết bị gốc (thiết bị gốc sẽ bị chiếm giữ)")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Lỗi khi sử dụng thiết bị gốc: {str(e)}")
             if self.streaming_process:
                 self.streaming_process.terminate()
                 self.streaming_process = None
@@ -249,7 +356,10 @@ class VideoStreamManager:
         if self.v4l2_process:
             logger.info("Đang dừng quá trình sao chép video...")
             self.v4l2_process.terminate()
-            self.v4l2_process.wait(timeout=5)
+            try:
+                self.v4l2_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.v4l2_process.kill()
             self.v4l2_process = None
     
     def stop_streaming(self):
@@ -257,7 +367,10 @@ class VideoStreamManager:
         if self.streaming_process:
             logger.info("Đang dừng quá trình streaming HLS...")
             self.streaming_process.terminate()
-            self.streaming_process.wait(timeout=5)
+            try:
+                self.streaming_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.streaming_process.kill()
             self.streaming_process = None
     
     def stop(self):
