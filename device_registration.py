@@ -7,12 +7,16 @@ import json
 import uuid
 from datetime import datetime
 import socket
+import dotenv
 
-# Thông tin xác thực Firebase (sẽ thay thế bằng thông tin thực tế của bạn)
-API_KEY = "AIzaSyBGS8Ce_W4i91LXiR3ZcFp_QN5FOfojHhQ"
-EMAIL = "iotuser01@email.com"
-PASSWORD = "huyht2004"
-PROJECT_ID = "babycare-81f74"
+# Load environment variables from .env file
+dotenv.load_dotenv()
+
+# Lấy thông tin xác thực Firebase từ biến môi trường
+API_KEY = os.getenv('API_KEY')
+EMAIL = os.getenv('EMAIL')
+PASSWORD = os.getenv('PASSWORD')
+PROJECT_ID = os.getenv('PROJECT_ID')
 
 # URL cho các API của Firebase
 FIREBASE_AUTH_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={API_KEY}"

@@ -16,7 +16,7 @@ Dự án này bao gồm hai phần chính: (1) đăng ký thiết bị với Fir
 
 ```bash
 # Cài đặt các thư viện Python cần thiết
-sudo pip3 install requests uuid
+sudo pip3 install requests uuid python-dotenv
 
 # Cài đặt v4l2loopback để tạo thiết bị camera ảo
 sudo apt-get update
@@ -29,7 +29,26 @@ sudo apt-get install -y ffmpeg gstreamer1.0-tools gstreamer1.0-plugins-good gstr
 sudo apt-get install -y nginx
 ```
 
-### 2. Cấu hình Nginx (Web Server)
+### 2. Cấu hình Môi Trường
+
+1. Tạo file `.env` từ file mẫu:
+```bash
+cp .env.example .env  # Nếu bạn có file .env.example
+# Hoặc tạo file mới
+nano .env
+```
+
+2. Thêm các thông tin cấu hình Firebase vào file `.env`:
+```
+API_KEY=YOUR_FIREBASE_API_KEY
+EMAIL=YOUR_EMAIL@example.com
+PASSWORD=YOUR_PASSWORD
+PROJECT_ID=YOUR_PROJECT_ID
+```
+
+3. Đảm bảo file `.env` được liệt kê trong `.gitignore` để tránh đẩy thông tin nhạy cảm lên GitHub.
+
+### 3. Cấu hình Nginx (Web Server)
 
 ```bash
 # Tạo thư mục để lưu trữ video stream
