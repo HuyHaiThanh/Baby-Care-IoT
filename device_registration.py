@@ -77,9 +77,6 @@ def authenticate_firebase():
         print("Đang xác thực với Firebase...")
         response = requests.post(FIREBASE_AUTH_URL, json=auth_data)
         
-        # Hiển thị chi tiết phản hồi để gỡ lỗi
-        print(f"Mã trạng thái xác thực: {response.status_code}")
-        
         if response.status_code != 200:
             print(f"Lỗi xác thực: {response.text}")
             return None
@@ -99,45 +96,24 @@ def check_device_exists(device_id, user_id, headers):
     Kiểm tra xem thiết bị đã được đăng ký cho người dùng này chưa
     Trả về True nếu đã tồn tại, False nếu chưa
     """
+    # Kiểm tra sự tồn tại của document trực tiếp
+    document_url = f"{FIREBASE_FIRESTORE_URL}/connections/{device_id}"
     try:
-        # Tìm kiếm tất cả các thiết bị có deviceId và userId trùng khớp
-        query_url = f"{FIREBASE_FIRESTORE_URL}/connections:runQuery"
-        query_data = {
-            "structuredQuery": {
-                "where": {
-                    "compositeFilter": {
-                        "op": "AND",
-                        "filters": [
-                            {
-                                "fieldFilter": {
-                                    "field": {"fieldPath": "deviceId"},
-                                    "op": "EQUAL",
-                                    "value": {"stringValue": device_id}
-                                }
-                            },
-                            {
-                                "fieldFilter": {
-                                    "field": {"fieldPath": "userId"},
-                                    "op": "EQUAL",
-                                    "value": {"stringValue": user_id}
-                                }
-                            }
-                        ]
-                    }
-                },
-                "from": [{"collectionId": "connections"}]
-            }
-        }
+        response = requests.get(document_url, headers=headers)
         
-        response = requests.post(query_url, json=query_data, headers=headers)
         if response.status_code == 200:
-            result = response.json()
-            # Nếu có kết quả trả về và không phải là null result
-            for item in result:
-                if "document" in item:
-                    print(f"Thiết bị với ID {device_id} đã được đăng ký cho người dùng này.")
-                    return True
-        
+            # Kiểm tra thêm xem document thuộc về user này không
+            document_data = response.json()
+            if "fields" in document_data:
+                if "userId" in document_data["fields"]:
+                    stored_user_id = document_data["fields"]["userId"]["stringValue"]
+                    if stored_user_id == user_id:
+                        print(f"Thiết bị với ID {device_id} đã được đăng ký cho người dùng này.")
+                        return True
+                    else:
+                        print(f"Thiết bị với ID {device_id} đã tồn tại nhưng thuộc về người dùng khác.")
+            print(f"Document với ID {device_id} đã tồn tại trong collection connections.")
+            return True
         return False
     except Exception as e:
         print(f"Lỗi khi kiểm tra thiết bị: {str(e)}")
@@ -158,7 +134,7 @@ def register_device(id_token, user_id):
         "Content-Type": "application/json"
     }
     
-    # Kiểm tra xem thiết bị này đã được đăng ký với user này chưa
+    # Kiểm tra xem thiết bị này đã được đăng ký chưa
     if check_device_exists(device_id, user_id, headers):
         return True
     
@@ -173,54 +149,28 @@ def register_device(id_token, user_id):
         }
     }
     
-    # URL để tạo document với tên = deviceId
-    document_url = f"{FIREBASE_FIRESTORE_URL}/connections/{device_id}"
-    
     try:
-        print(f"Kiểm tra thiết bị với ID: {device_id}")
-        print(f"URL yêu cầu: {document_url}")
+        print(f"Đăng ký thiết bị mới với deviceId: {device_id}")
         
-        # Kiểm tra xem document với deviceId này đã tồn tại chưa
-        check_response = requests.get(document_url, headers=headers)
-        print(f"Mã phản hồi kiểm tra: {check_response.status_code}")
+        # Sử dụng phương pháp commit API đã được xác nhận hoạt động
+        commit_url = f"{FIREBASE_FIRESTORE_URL}:commit"
+        commit_payload = {
+            "writes": [{
+                "update": {
+                    "name": f"projects/{PROJECT_ID}/databases/(default)/documents/connections/{device_id}",
+                    "fields": device_data["fields"]
+                }
+            }]
+        }
         
-        if check_response.status_code == 200:
-            print(f"Document với ID {device_id} đã tồn tại trong collection connections.")
-            return True
+        response = requests.post(commit_url, json=commit_payload, headers=headers)
         
-        # Nếu document chưa tồn tại, tạo mới với ID = deviceId
-        print(f"Tạo document mới với ID = deviceId: {device_id}")
-        
-        # Sử dụng phương thức PUT để tạo document với ID đã xác định
-        response = requests.put(document_url, json=device_data, headers=headers)
-        
-        print(f"Mã phản hồi đăng ký: {response.status_code}")
         if response.status_code >= 200 and response.status_code < 300:
             print(f"Đăng ký thiết bị thành công với deviceId: {device_id}")
             return True
         else:
             print(f"Lỗi khi đăng ký thiết bị: {response.text}")
-            
-            # Thử phương pháp thay thế nếu PUT không thành công
-            print("Thử phương pháp thay thế...")
-            alt_url = f"{FIREBASE_FIRESTORE_URL}:commit"
-            alt_payload = {
-                "writes": [{
-                    "update": {
-                        "name": f"projects/{PROJECT_ID}/databases/(default)/documents/connections/{device_id}",
-                        "fields": device_data["fields"]
-                    }
-                }]
-            }
-            alt_response = requests.post(alt_url, json=alt_payload, headers=headers)
-            print(f"Mã phản hồi phương pháp thay thế: {alt_response.status_code}")
-            
-            if alt_response.status_code >= 200 and alt_response.status_code < 300:
-                print(f"Đăng ký thiết bị thành công với phương pháp thay thế. deviceId: {device_id}")
-                return True
-            else:
-                print(f"Lỗi khi sử dụng phương pháp thay thế: {alt_response.text}")
-                return False
+            return False
     except Exception as e:
         print(f"Lỗi khi đăng ký thiết bị: {str(e)}")
         import traceback
