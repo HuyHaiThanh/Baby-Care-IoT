@@ -10,8 +10,8 @@ import socket
 
 # Thông tin xác thực Firebase (sẽ thay thế bằng thông tin thực tế của bạn)
 API_KEY = "AIzaSyBGS8Ce_W4i91LXiR3ZcFp_QN5FOfojHhQ"
-EMAIL = "huyhaithanh51@gmail.com"
-PASSWORD = "Huy01654491909"
+EMAIL = "iotuser01@email.com"
+PASSWORD = "huyhaithanh"
 PROJECT_ID = "babycare-81f74"
 
 # URL cho các API của Firebase
