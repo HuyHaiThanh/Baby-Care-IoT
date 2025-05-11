@@ -7,6 +7,10 @@ import json
 import uuid
 from datetime import datetime
 import dotenv
+import subprocess
+import sys
+import time
+import argparse
 
 # Load environment variables từ file .env
 dotenv.load_dotenv()
@@ -16,6 +20,9 @@ API_KEY = os.getenv('API_KEY')
 EMAIL = os.getenv('EMAIL')
 PASSWORD = os.getenv('PASSWORD')
 PROJECT_ID = os.getenv('PROJECT_ID')
+
+# Đường dẫn mặc định đến file cấu hình ngrok
+DEFAULT_NGROK_PATH = "/usr/local/bin/ngrok"
 
 # Kiểm tra xem có đủ thông tin cần thiết không
 if not all([API_KEY, EMAIL, PASSWORD, PROJECT_ID]):
@@ -63,6 +70,61 @@ def get_device_uuid():
     
     return device_uuid
 
+def is_ngrok_running():
+    """
+    Kiểm tra xem ngrok đã đang chạy chưa bằng cách thử kết nối đến API local
+    
+    Returns:
+        bool: True nếu ngrok đang chạy, False nếu không
+    """
+    try:
+        response = requests.get("http://127.0.0.1:4040/api/tunnels", timeout=2)
+        if response.status_code == 200:
+            return True
+        return False
+    except:
+        return False
+
+def start_ngrok(port=80, ngrok_path=DEFAULT_NGROK_PATH):
+    """
+    Thử khởi động ngrok nếu không đang chạy
+    
+    Returns:
+        bool: True nếu ngrok đã được khởi động thành công, False nếu không
+    """
+    if is_ngrok_running():
+        return True
+        
+    # Kiểm tra xem ngrok đã được cài đặt chưa
+    if not os.path.exists(ngrok_path):
+        print(f"Không tìm thấy ngrok tại {ngrok_path}")
+        print("Vui lòng cài đặt ngrok hoặc chỉ định đường dẫn đúng")
+        return False
+    
+    try:
+        # Chạy ngrok dưới dạng tiến trình nền
+        cmd = [ngrok_path, "http", str(port)]
+        ngrok_process = subprocess.Popen(
+            cmd, 
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        
+        # Đợi để ngrok khởi động
+        print("Đang khởi động ngrok...")
+        for _ in range(5):  # Thử trong 5 giây
+            time.sleep(1)
+            if is_ngrok_running():
+                print("Ngrok đã khởi động thành công")
+                return True
+        
+        print("Không thể khởi động ngrok sau 5 giây")
+        return False
+            
+    except Exception as e:
+        print(f"Lỗi khi khởi động ngrok: {str(e)}")
+        return False
+
 def get_ngrok_url():
     """
     Lấy URL public của ngrok từ API cục bộ.
@@ -72,7 +134,7 @@ def get_ngrok_url():
     """
     try:
         # Truy vấn API cục bộ của ngrok để lấy URL public
-        response = requests.get("http://127.0.0.1:4040/api/tunnels")
+        response = requests.get("http://127.0.0.1:4040/api/tunnels", timeout=3)
         if response.status_code == 200:
             data = response.json()
             # Tìm tunnel HTTPS hoặc HTTP
@@ -160,14 +222,14 @@ def check_device_exists(device_uuid, id_token):
         print(f"Lỗi khi kiểm tra thiết bị: {str(e)}")
         return False, None
 
-def register_device(device_uuid, id_token, ngrok_url):
+def register_device(device_uuid, id_token, ngrok_url=None):
     """
     Đăng ký thiết bị mới vào Firestore nếu chưa tồn tại
     
     Args:
         device_uuid (str): UUID của thiết bị
         id_token (str): Firebase ID token để xác thực
-        ngrok_url (str): URL ngrok public
+        ngrok_url (str, optional): URL ngrok public
         
     Returns:
         bool: True nếu thành công, False nếu thất bại
@@ -190,10 +252,13 @@ def register_device(device_uuid, id_token, ngrok_url):
         
         update_data = {
             "fields": {
-                "uri": {"stringValue": ngrok_url},
                 "updatedAt": {"timestampValue": current_time}
             }
         }
+        
+        # Thêm URI nếu có
+        if ngrok_url:
+            update_data["fields"]["uri"] = {"stringValue": ngrok_url}
         
         # Sử dụng phương thức PATCH để cập nhật một số trường
         document_url = f"{FIREBASE_FIRESTORE_URL}/devices/{device_uuid}"
@@ -201,7 +266,7 @@ def register_device(device_uuid, id_token, ngrok_url):
             response = requests.patch(document_url, json=update_data, headers=headers)
             
             if response.status_code >= 200 and response.status_code < 300:
-                print(f"Cập nhật thành công URI cho thiết bị với ID: {device_uuid}")
+                print(f"Cập nhật thành công thông tin cho thiết bị với ID: {device_uuid}")
                 return True
             else:
                 print(f"Lỗi khi cập nhật thiết bị: {response.text}")
@@ -228,7 +293,6 @@ def register_device(device_uuid, id_token, ngrok_url):
         }
         
         # Tạo document với ID = deviceId
-        document_url = f"{FIREBASE_FIRESTORE_URL}/devices/{device_uuid}"
         try:
             # Sử dụng API commit của Firestore để tạo document với ID cụ thể
             commit_url = f"{FIREBASE_FIRESTORE_URL}:commit"
@@ -251,8 +315,6 @@ def register_device(device_uuid, id_token, ngrok_url):
                 return False
         except Exception as e:
             print(f"Lỗi khi đăng ký thiết bị: {str(e)}")
-            import traceback
-            traceback.print_exc()
             return False
 
 def update_streaming_status(device_uuid, id_token, is_online=False, ngrok_url=None):
@@ -307,10 +369,14 @@ def update_streaming_status(device_uuid, id_token, is_online=False, ngrok_url=No
         print(f"Lỗi khi cập nhật trạng thái thiết bị: {str(e)}")
         return False
 
-def initialize_device():
+def initialize_device(start_ngrok_if_needed=True, ngrok_path=DEFAULT_NGROK_PATH):
     """
     Khởi tạo và đăng ký thiết bị khi khởi động
     
+    Args:
+        start_ngrok_if_needed (bool): Tự động khởi động ngrok nếu chưa chạy
+        ngrok_path (str): Đường dẫn đến ngrok binary
+        
     Returns:
         tuple: (device_uuid, id_token) nếu thành công
     """
@@ -326,8 +392,14 @@ def initialize_device():
     device_uuid = get_device_uuid()
     print(f"UUID của thiết bị: {device_uuid}")
     
+    # Thử khởi động ngrok nếu được yêu cầu và chưa chạy
+    ngrok_started = False
+    if start_ngrok_if_needed and not is_ngrok_running():
+        print("ngrok chưa chạy, đang thử khởi động...")
+        ngrok_started = start_ngrok(ngrok_path=ngrok_path)
+    
     # Lấy URL ngrok
-    ngrok_url = get_ngrok_url()
+    ngrok_url = get_ngrok_url() if is_ngrok_running() else None
     if not ngrok_url:
         print("Không thể lấy URL ngrok. Tiếp tục với URI trống.")
     else:
@@ -344,8 +416,17 @@ def main():
     """
     Hàm chính để khởi tạo thiết bị khi script được chạy trực tiếp
     """
+    parser = argparse.ArgumentParser(description='Đăng ký thiết bị với Firebase Firestore')
+    parser.add_argument('--start-ngrok', action='store_true', help='Tự động khởi động ngrok nếu chưa chạy')
+    parser.add_argument('--ngrok-path', default=DEFAULT_NGROK_PATH, help='Đường dẫn đến ngrok binary')
+    
+    args = parser.parse_args()
+    
     print("Khởi tạo thiết bị...")
-    device_uuid, id_token = initialize_device()
+    device_uuid, id_token = initialize_device(
+        start_ngrok_if_needed=args.start_ngrok,
+        ngrok_path=args.ngrok_path
+    )
     
     if not device_uuid or not id_token:
         print("Khởi tạo thiết bị thất bại.")
