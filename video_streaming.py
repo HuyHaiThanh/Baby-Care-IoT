@@ -14,7 +14,7 @@ from firebase_device_manager import initialize_device, update_streaming_status, 
 # Thiết lập logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levellevelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('video_streaming')
 
