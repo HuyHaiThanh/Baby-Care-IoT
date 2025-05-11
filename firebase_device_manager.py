@@ -426,31 +426,44 @@ def update_streaming_status(device_uuid, id_token, is_online=False, ngrok_url=No
     # Thời gian hiện tại theo định dạng ISO (chuẩn Firebase timestamp)
     current_time = datetime.utcnow().isoformat() + "Z"
     
-    # Dữ liệu cần cập nhật
-    update_data = {
-        "fields": {
-            "isOnline": {"booleanValue": is_online},
-            "updatedAt": {"timestampValue": current_time}
-        }
-    }
-    
-    # Thêm URI nếu được cung cấp
-    if ngrok_url:
-        update_data["fields"]["uri"] = {"stringValue": ngrok_url}
-    
-    # URL để cập nhật document
+    # Trước khi cập nhật, lấy document hiện tại để đảm bảo giữ lại các trường
     document_url = f"{FIREBASE_FIRESTORE_URL}/devices/{device_uuid}"
     
     try:
-        # Sử dụng phương thức PATCH để cập nhật một số trường
-        response = requests.patch(document_url, json=update_data, headers=headers)
+        # Lấy document hiện tại
+        get_response = requests.get(document_url, headers=headers)
         
-        if response.status_code >= 200 and response.status_code < 300:
-            status = "online" if is_online else "offline"
-            print(f"Cập nhật trạng thái {status} thành công cho thiết bị với ID: {device_uuid}")
-            return True
+        if get_response.status_code == 200:
+            current_data = get_response.json()
+            
+            # Tạo dữ liệu cập nhật với tất cả các trường hiện có
+            update_data = {"fields": {}}
+            
+            if "fields" in current_data:
+                # Sao chép tất cả các trường hiện có
+                for field, value in current_data["fields"].items():
+                    update_data["fields"][field] = value
+            
+            # Cập nhật các trường mới
+            update_data["fields"]["isOnline"] = {"booleanValue": is_online}
+            update_data["fields"]["updatedAt"] = {"timestampValue": current_time}
+            
+            # Thêm URI nếu được cung cấp
+            if ngrok_url:
+                update_data["fields"]["uri"] = {"stringValue": ngrok_url}
+            
+            # Sử dụng phương thức PATCH để cập nhật
+            response = requests.patch(document_url, json=update_data, headers=headers)
+            
+            if response.status_code >= 200 and response.status_code < 300:
+                status = "online" if is_online else "offline"
+                print(f"Cập nhật trạng thái {status} thành công cho thiết bị với ID: {device_uuid}")
+                return True
+            else:
+                print(f"Lỗi khi cập nhật trạng thái thiết bị: {response.text}")
+                return False
         else:
-            print(f"Lỗi khi cập nhật trạng thái thiết bị: {response.text}")
+            print(f"Không thể lấy dữ liệu hiện tại của thiết bị: {get_response.text}")
             return False
     except Exception as e:
         print(f"Lỗi khi cập nhật trạng thái thiết bị: {str(e)}")
