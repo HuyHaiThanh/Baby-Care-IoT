@@ -394,7 +394,7 @@ def register_device(device_uuid, id_token, ngrok_url=None):
             
             response = requests.post(commit_url, json=commit_payload, headers=headers)
             
-            if response.status_code >= 200 và response.status_code < 300:
+            if response.status_code >= 200 and response.status_code < 300:
                 print(f"Đăng ký thiết bị thành công với ID: {device_uuid}")
                 return True
             else:
