@@ -171,64 +171,64 @@ class VideoStreamManager:
             if not self.check_v4l2loopback_installed():
                 logger.error("v4l2loopback không được cài đặt. Không thể tiếp tục với thiết bị ảo.")
                 return False
-            
-            # Xóa tất cả các module v4l2loopback hiện tại trước để tránh xung đột
-            subprocess.run(["sudo", "modprobe", "-r", "v4l2loopback"], 
-                           capture_output=True, text=True)
-            time.sleep(1)
-            
+                        
             # Tìm một thiết bị khả dụng
             self.virtual_device, device_number = self.find_available_video_device()
             logger.info(f"Sử dụng thiết bị ảo: {self.virtual_device}")
             
-            # Nạp module v4l2loopback với các tùy chọn đúng
+            # Nạp module v4l2loopback với các tùy chọn đơn giản hơn cho Raspberry Pi 2B
             logger.info("Đang nạp module v4l2loopback...")
+            # Sử dụng syntax đơn giản hơn cho Raspberry Pi 2B
             cmd = [
                 "sudo", "modprobe", "v4l2loopback",
                 f"video_nr={device_number}",
-                "exclusive_caps=0",  # Đặt 0 để tương thích tốt hơn
-                "card_label=\"Virtual Camera\"",
-                "max_buffers=2"
+                "exclusive_caps=0",
+                "card_label=VirtualCam"  # Không sử dụng dấu nháy kép để tránh sự cố
             ]
+            
             result = subprocess.run(cmd, capture_output=True, text=True)
             
             if result.returncode != 0:
                 logger.error(f"Không thể nạp module v4l2loopback: {result.stderr}")
-                return False
+                # Thử cách khác với ít tham số hơn
+                simple_cmd = ["sudo", "modprobe", "v4l2loopback"]
+                simple_result = subprocess.run(simple_cmd, capture_output=True, text=True)
+                if simple_result.returncode != 0:
+                    logger.error(f"Không thể nạp module v4l2loopback đơn giản: {simple_result.stderr}")
+                    return False
+                logger.info("Đã nạp module v4l2loopback thành công với cách đơn giản")
                 
-            time.sleep(2)  # Đợi module được nạp
+            time.sleep(3)  # Đợi module được nạp
             
             # Kiểm tra xem thiết bị đã được tạo chưa
-            if not os.path.exists(self.virtual_device):
-                logger.error(f"Thiết bị ảo {self.virtual_device} không được tạo thành công")
-                return False
-            
-            # Kiểm tra loại thiết bị
-            try:
-                device_info = subprocess.run(["v4l2-ctl", "-d", self.virtual_device, "--info"], 
-                                          capture_output=True, text=True)
+            if os.path.exists(self.virtual_device):
+                self.virtual_device_created = True
+                logger.info(f"Thiết bị ảo {self.virtual_device} đã được tạo thành công")
+                return True
+            else:
+                # Nếu thiết bị không tồn tại, thử tìm một thiết bị khác đã được tạo
+                logger.warning(f"Thiết bị ảo {self.virtual_device} không tồn tại. Đang tìm thiết bị v4l2loopback khác...")
                 
-                if "Driver name: v4l2loopback" in device_info.stdout:
-                    logger.info(f"Thông tin thiết bị ảo: {device_info.stdout.strip()}")
-                    self.virtual_device_created = True
-                else:
-                    # Thử lấy thông tin chi tiết hơn
-                    device_caps = subprocess.run(["v4l2-ctl", "-d", self.virtual_device, "--all"], 
-                                            capture_output=True, text=True)
-                    logger.info(f"Thông tin thiết bị: {device_caps.stdout.strip()}")
-                    
-                    if "v4l2loopback" in device_caps.stdout:
-                        self.virtual_device_created = True
-                        logger.info(f"Thiết bị ảo {self.virtual_device} đã được tạo thành công")
-                    else:
-                        logger.warning(f"Thiết bị {self.virtual_device} không phải là thiết bị v4l2loopback")
-                        return False
-            except Exception as e:
-                logger.error(f"Không thể kiểm tra thông tin thiết bị: {str(e)}")
-                return False
+                # Thử kiểm tra tất cả các thiết bị video từ 0-20
+                for i in range(20):
+                    test_device = f"/dev/video{i}"
+                    if os.path.exists(test_device):
+                        try:
+                            # Kiểm tra xem thiết bị có phải là v4l2loopback không
+                            device_info = subprocess.run(["v4l2-ctl", "-d", test_device, "--info"], 
+                                                    capture_output=True, text=True, timeout=2)
+                            
+                            if "v4l2loopback" in device_info.stdout or "loopback" in device_info.stdout:
+                                self.virtual_device = test_device
+                                self.virtual_device_created = True
+                                logger.info(f"Tìm thấy thiết bị v4l2loopback: {test_device}")
+                                return True
+                        except Exception:
+                            continue
             
-            logger.info(f"Thiết bị ảo {self.virtual_device} đã sẵn sàng")
-            return self.virtual_device_created
+            logger.error("Không tìm thấy thiết bị v4l2loopback nào")
+            return False
+            
         except Exception as e:
             logger.error(f"Lỗi khi thiết lập v4l2loopback: {str(e)}")
             return False

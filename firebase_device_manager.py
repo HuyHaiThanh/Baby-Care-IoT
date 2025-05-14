@@ -253,76 +253,6 @@ def register_device(device_uuid, id_token, ngrok_url=None):
             created_at = device_data["fields"]["createdAt"]
             print(f"Sử dụng giá trị createdAt hiện có: {created_at.get('timestampValue')}")
     
-    # Kiểm tra xem có document nào khác có cùng thuộc tính của thiết bị này không
-    # bằng cách thực hiện truy vấn tìm kiếm
-    query_url = f"{FIREBASE_FIRESTORE_URL}:runQuery"
-    query_data = {
-        "structuredQuery": {
-            "from": [{"collectionId": "devices"}],
-            "where": {
-                "fieldFilter": {
-                    "field": {"fieldPath": "id"},
-                    "op": "EQUAL",
-                    "value": {"stringValue": device_uuid}
-                }
-            },
-            "limit": 1
-        }
-    }
-    
-    # Biến lưu trữ các trường đã hợp nhất từ document trùng lặp
-    merged_fields = {}
-    
-    try:
-        response = requests.post(query_url, json=query_data, headers=headers)
-        if response.status_code == 200:
-            results = response.json()
-            existing_doc_with_same_id = None
-            
-            # Kiểm tra xem có document nào khác trong kết quả không
-            for result in results:
-                if "document" in result:
-                    doc_path = result["document"]["name"]
-                    doc_id = doc_path.split("/")[-1]
-                    if doc_id != device_uuid:  # Nếu ID khác với UUID, đây là document cần hợp nhất
-                        existing_doc_with_same_id = doc_id
-                        print(f"Tìm thấy document trùng lặp với ID: {existing_doc_with_same_id}")
-                        break
-            
-            # Nếu tìm thấy document trùng lặp, xóa nó sau khi hợp nhất dữ liệu
-            if existing_doc_with_same_id:
-                # Lấy dữ liệu từ document trùng lặp
-                duplicate_doc_url = f"{FIREBASE_FIRESTORE_URL}/devices/{existing_doc_with_same_id}"
-                dup_response = requests.get(duplicate_doc_url, headers=headers)
-                if dup_response.status_code == 200:
-                    dup_data = dup_response.json()
-                    
-                    # Hợp nhất dữ liệu để dùng cho document UUID
-                    if "fields" in dup_data:
-                        for field, value in dup_data["fields"].items():
-                            if field != "id":  # Không lấy trường ID từ document trùng lặp
-                                merged_fields[field] = value
-                                
-                                # Lấy createdAt từ document trùng lặp nếu chưa có
-                                if field == "createdAt" and not created_at:
-                                    created_at = value
-                                    print(f"Sử dụng createdAt từ document trùng lặp: {value.get('timestampValue')}")
-                    
-                    # Xóa document trùng lặp
-                    delete_url = f"{FIREBASE_FIRESTORE_URL}:commit"
-                    delete_payload = {
-                        "writes": [{
-                            "delete": f"projects/{PROJECT_ID}/databases/(default)/documents/devices/{existing_doc_with_same_id}"
-                        }]
-                    }
-                    requests.post(delete_url, json=delete_payload, headers=headers)
-                    print(f"Đã xóa document trùng lặp: {existing_doc_with_same_id}")
-                    
-                    # Cập nhật trạng thái thiết bị để biết rằng cần hợp nhất dữ liệu
-                    exists = exists or len(merged_fields) > 0
-    except Exception as e:
-        print(f"Lỗi khi kiểm tra document trùng lặp: {str(e)}")
-    
     if exists:
         # Nếu thiết bị đã tồn tại, chỉ cập nhật URI và updatedAt
         print("Cập nhật thông tin cho thiết bị đã tồn tại")
@@ -336,12 +266,6 @@ def register_device(device_uuid, id_token, ngrok_url=None):
         # Thêm URI nếu có
         if ngrok_url:
             update_data["fields"]["uri"] = {"stringValue": ngrok_url}
-        
-        # Thêm các trường từ document trùng lặp (nếu có) khi cần thiết
-        for field, value in merged_fields.items():
-            # Không cập nhật trường updatedAt từ document trùng lặp
-            if field != "updatedAt" and field != "uri":
-                update_data["fields"][field] = value
         
         # Đảm bảo luôn có createdAt, sử dụng thời gian hiện tại nếu không có giá trị nào trước đó
         if not created_at:
@@ -370,11 +294,12 @@ def register_device(device_uuid, id_token, ngrok_url=None):
                 "id": {"stringValue": device_uuid},
                 "createdAt": {"timestampValue": current_time},  # Luôn đặt createdAt khi tạo mới
                 "updatedAt": {"timestampValue": current_time},
-                "cryingThreshold": {"integerValue": "60"},
-                "noBlanketThreshold": {"integerValue": "60"},
-                "proneThreshold": {"integerValue": "30"},
+                # Cập nhật threshold theo yêu cầu mới
+                "cryingThreshold": {"integerValue": "40"},
+                "noBlanketThreshold": {"integerValue": "150"},
+                "proneThreshold": {"integerValue": "25"},
                 "sideThreshold": {"integerValue": "30"},
-                "isOnline": {"booleanValue": False},
+                "isOnline": {"booleanValue": True},  # Mặc định là true khi tạo mới
                 "uri": {"stringValue": ngrok_url if ngrok_url else ""}
             }
         }
