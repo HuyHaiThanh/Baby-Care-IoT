@@ -109,6 +109,48 @@ def configure_ngrok(token=None, ngrok_path=DEFAULT_NGROK_PATH):
         print(f"Lỗi khi cấu hình ngrok: {e}")
         return False
 
+def check_existing_ngrok_config(ngrok_path):
+    """
+    Kiểm tra xem ngrok đã được cấu hình trong hệ thống chưa
+    
+    Args:
+        ngrok_path (str): Đường dẫn đến file nhị phân ngrok
+        
+    Returns:
+        bool: True nếu ngrok đã được cấu hình, False nếu chưa
+    """
+    try:
+        # Thử kiểm tra cấu hình hiện tại của ngrok
+        result = subprocess.run([ngrok_path, "config", "list"], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            # Kiểm tra xem có authtoken không
+            if "authtoken" in result.stdout and "null" not in result.stdout:
+                print("Phát hiện cấu hình ngrok có sẵn với authtoken.")
+                return True
+    except Exception as e:
+        print(f"Lỗi khi kiểm tra cấu hình ngrok: {str(e)}")
+    
+    # Kiểm tra file cấu hình mặc định của ngrok
+    home_dir = os.path.expanduser("~")
+    ngrok_config_paths = [
+        os.path.join(home_dir, ".ngrok2", "ngrok.yml"),  # Đường dẫn cũ
+        os.path.join(home_dir, ".config", "ngrok", "ngrok.yml"),  # Đường dẫn mới
+    ]
+    
+    for config_path in ngrok_config_paths:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as f:
+                    content = f.read()
+                    if "authtoken" in content:
+                        print(f"Phát hiện file cấu hình ngrok có sẵn tại {config_path}")
+                        return True
+            except Exception:
+                pass
+    
+    return False
+
 def is_ngrok_running():
     """
     Kiểm tra xem ngrok đã đang chạy chưa
@@ -231,23 +273,33 @@ def main():
     if not (args.config or args.start):
         print("Không có tùy chọn được chỉ định. Tự động khởi động ngrok với cấu hình mặc định...")
         
-        # Kiểm tra xem có token đã lưu không
+        # Kiểm tra cấu hình ngrok trong file cục bộ và hệ thống
         token_exists = False
+        
+        # Kiểm tra file cấu hình cục bộ
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, 'r') as f:
                     config = json.load(f)
                     token_exists = 'authtoken' in config and config['authtoken']
             except Exception as e:
-                print(f"Lỗi khi đọc file cấu hình: {e}")
+                print(f"Lỗi khi đọc file cấu hình cục bộ: {e}")
         
-        # Nếu chưa có token, cấu hình trước
+        # Nếu không có trong file cục bộ, kiểm tra cấu hình hệ thống
+        if not token_exists:
+            token_exists = check_existing_ngrok_config(args.ngrok_path)
+        
+        # Nếu chưa có token ở cả hai nơi, cấu hình mới
         if not token_exists:
             print("Chưa có authtoken ngrok. Cần cấu hình trước khi khởi động.")
             if args.token:
                 configure_ngrok(args.token, args.ngrok_path)
             else:
-                configure_ngrok(None, args.ngrok_path)
+                try:
+                    configure_ngrok(None, args.ngrok_path)
+                except KeyboardInterrupt:
+                    print("\nĐã hủy cấu hình ngrok. Thoát chương trình.")
+                    return
         
         # Khởi động ngrok
         url = start_ngrok(args.port, args.ngrok_path)
