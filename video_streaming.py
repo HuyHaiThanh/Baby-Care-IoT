@@ -656,15 +656,25 @@ def main():
     global device_uuid, id_token
     
     parser = argparse.ArgumentParser(description='Video streaming với v4l2loopback')
-    parser.add_argument('--physical-device', default='/dev/video0', help='Thiết bị camera vật lý')
+    parser.add_argument('--physical-device', help='Thiết bị camera vật lý')
     parser.add_argument('--virtual-device', default='/dev/video10', help='Thiết bị camera ảo')
     parser.add_argument('--width', type=int, default=640, help='Chiều rộng video')
     parser.add_argument('--height', type=int, default=480, help='Chiều cao video')
     parser.add_argument('--framerate', type=int, default=30, help='Tốc độ khung hình')
-    parser.add_argument('--no-firebase', action='storetrue', help='Không sử dụng Firebase')
+    parser.add_argument('--no-firebase', action='store_true', help='Không sử dụng Firebase')
     parser.add_argument('--direct', action='store_true', help='Stream trực tiếp từ camera vật lý, không dùng virtual device')
     
     args = parser.parse_args()
+    
+    # Tự động phát hiện thiết bị camera nếu không được chỉ định
+    if not args.physical_device:
+        available_cameras = find_available_camera_devices()
+        if available_cameras:
+            args.physical_device = available_cameras[0]
+            logger.info(f"Tự động phát hiện camera: {args.physical_device}")
+        else:
+            args.physical_device = '/dev/video0'
+            logger.warning(f"Không tìm thấy camera. Sử dụng mặc định: {args.physical_device}")
     
     # Khởi tạo thiết bị trên Firebase (trừ khi có tùy chọn --no-firebase)
     if not args.no_firebase:

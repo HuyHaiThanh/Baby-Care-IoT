@@ -9,9 +9,38 @@ import requests
 import argparse
 from firebase_device_manager import authenticate_firebase, get_device_uuid, update_streaming_status
 
-# Đường dẫn mặc định đến file nhị phân ngrok
+# Đường dẫn mặc định đến file nhị phân ngrok (thêm các vị trí phổ biến)
 DEFAULT_NGROK_PATH = "/usr/local/bin/ngrok"
+ALTERNATIVE_NGROK_PATHS = [
+    "/usr/bin/ngrok",
+    "/usr/local/bin/ngrok",
+    "/home/pi/ngrok",
+    os.path.join(os.path.expanduser("~"), "ngrok")
+]
 CONFIG_FILE = "ngrok_config.json"
+
+def find_ngrok_binary():
+    """
+    Tìm file nhị phân ngrok trên hệ thống
+    
+    Returns:
+        str: Đường dẫn đến ngrok nếu tìm thấy, None nếu không tìm thấy
+    """
+    # Kiểm tra theo thứ tự ưu tiên
+    for path in ALTERNATIVE_NGROK_PATHS:
+        if os.path.exists(path) and os.access(path, os.X_OK):
+            return path
+            
+    # Kiểm tra trong PATH
+    try:
+        result = subprocess.run(["which", "ngrok"], 
+                             capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+        
+    return None
 
 def check_ngrok_installed(ngrok_path):
     """
@@ -23,7 +52,7 @@ def check_ngrok_installed(ngrok_path):
     Returns:
         bool: True nếu đã cài đặt, False nếu chưa
     """
-    return os.path.exists(ngrok_path)
+    return os.path.exists(ngrok_path) and os.access(ngrok_path, os.X_OK)
 
 def configure_ngrok(token=None, ngrok_path=DEFAULT_NGROK_PATH):
     """
@@ -178,6 +207,17 @@ def main():
     
     args = parser.parse_args()
     
+    # Tìm ngrok binary nếu đường dẫn mặc định không tồn tại
+    if not os.path.exists(args.ngrok_path):
+        detected_path = find_ngrok_binary()
+        if detected_path:
+            print(f"Đã tìm thấy ngrok tại: {detected_path}")
+            args.ngrok_path = detected_path
+        else:
+            print(f"Không thể tìm thấy ngrok tại {args.ngrok_path} hoặc các vị trí thông thường khác.")
+            print("Vui lòng cài đặt ngrok hoặc cung cấp đường dẫn chính xác với --ngrok-path")
+            return
+    
     # Xử lý các tùy chọn
     if args.config:
         configure_ngrok(args.token, args.ngrok_path)
@@ -187,9 +227,34 @@ def main():
         if not url:
             print("Không thể khởi động ngrok.")
     
-    # Nếu không có tùy chọn nào được chỉ định, hiển thị help
+    # Nếu không có tùy chọn nào được chỉ định, tự động khởi động ngrok
     if not (args.config or args.start):
-        parser.print_help()
+        print("Không có tùy chọn được chỉ định. Tự động khởi động ngrok với cấu hình mặc định...")
+        
+        # Kiểm tra xem có token đã lưu không
+        token_exists = False
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    config = json.load(f)
+                    token_exists = 'authtoken' in config and config['authtoken']
+            except Exception as e:
+                print(f"Lỗi khi đọc file cấu hình: {e}")
+        
+        # Nếu chưa có token, cấu hình trước
+        if not token_exists:
+            print("Chưa có authtoken ngrok. Cần cấu hình trước khi khởi động.")
+            if args.token:
+                configure_ngrok(args.token, args.ngrok_path)
+            else:
+                configure_ngrok(None, args.ngrok_path)
+        
+        # Khởi động ngrok
+        url = start_ngrok(args.port, args.ngrok_path)
+        if url:
+            print(f"Ngrok đã khởi động thành công với URL: {url}")
+        else:
+            print("Không thể khởi động ngrok tự động. Hãy thử lại với --start hoặc kiểm tra lỗi.")
 
 if __name__ == "__main__":
     main()
