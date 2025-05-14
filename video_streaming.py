@@ -94,44 +94,53 @@ class VideoStreamManager:
         logger.info(f"Bắt đầu streaming HLS từ {self.video_device}")
         
         try:
-            # Đảm bảo thư mục đầu ra tồn tại
+            # Đảm bảo thư mục đầu ra tồn tại và có quyền truy cập đầy đủ
             os.makedirs(HLS_OUTPUT_DIR, exist_ok=True)
             subprocess.run(["sudo", "chmod", "-R", "777", HLS_OUTPUT_DIR], 
                          capture_output=True, text=True)
             
-            # Câu lệnh gst-launch-1.0 cho streaming
-            # Sử dụng định dạng khác nhau tùy theo loại thiết bị
+            # Xóa các file cũ nếu có
+            try:
+                subprocess.run(["sudo", "rm", "-f", f"{HLS_OUTPUT_DIR}/*.ts", f"{HLS_OUTPUT_DIR}/*.m3u8"], 
+                              capture_output=True, shell=True)
+            except Exception:
+                pass
+            
+            # Cấu hình HLS cho VLC với UDP thay vì file segment
             if self.is_virtual_device:
                 # Thiết bị ảo - sử dụng video/x-raw
-                logger.info("Sử dụng định dạng video/x-raw cho thiết bị ảo")
+                logger.info("Sử dụng định dạng video/x-raw cho thiết bị ảo với UDP Streaming")
                 command = [
                     "sudo", "gst-launch-1.0",
                     "v4l2src", f"device={self.video_device}", "!", 
                     f"video/x-raw,width={self.width},height={self.height},framerate={self.framerate}/1", "!",
                     "videoconvert", "!",
-                    "x264enc", "tune=zerolatency", "bitrate=512", "speed-preset=ultrafast", "key-int-max=30", "!", 
+                    "x264enc", "tune=zerolatency", "bitrate=2048", "speed-preset=ultrafast", 
+                    "key-int-max=15", "!",
                     "mpegtsmux", "!",
                     "hlssink", 
                     f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
                     f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
-                    "target-duration=2", 
-                    "max-files=3"
+                    "target-duration=1", 
+                    "max-files=15"
                 ]
             else:
                 # Thiết bị thật - sử dụng image/jpeg
-                logger.info("Sử dụng định dạng image/jpeg cho camera thực")
+                logger.info("Sử dụng định dạng image/jpeg cho camera thực với UDP Streaming")
                 command = [
                     "sudo", "gst-launch-1.0",
                     "v4l2src", f"device={self.video_device}", "!", 
                     f"image/jpeg,width={self.width},height={self.height},framerate={self.framerate}/1", "!",
                     "jpegdec", "!",
-                    "x264enc", "tune=zerolatency", "bitrate=512", "speed-preset=ultrafast", "key-int-max=30", "!", 
+                    "videoconvert", "!",
+                    "x264enc", "tune=zerolatency", "bitrate=2048", "speed-preset=ultrafast", 
+                    "key-int-max=15", "!",
                     "mpegtsmux", "!",
                     "hlssink", 
                     f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
                     f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
-                    "target-duration=2", 
-                    "max-files=3"
+                    "target-duration=1", 
+                    "max-files=15"
                 ]
             
             logger.info("Sử dụng lệnh: " + " ".join(command))
@@ -167,13 +176,14 @@ class VideoStreamManager:
                             "v4l2src", f"device={self.video_device}", "!", 
                             f"{video_format},width={self.width},height={self.height},framerate={self.framerate}/1", "!",
                             "videoconvert", "!",
-                            "x264enc", "tune=zerolatency", "bitrate=512", "speed-preset=ultrafast", "key-int-max=30", "!", 
+                            "x264enc", "tune=zerolatency", "bitrate=2048", "speed-preset=ultrafast", 
+                            "key-int-max=15", "!",
                             "mpegtsmux", "!",
                             "hlssink", 
                             f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
                             f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
-                            "target-duration=2", 
-                            "max-files=3"
+                            "target-duration=1", 
+                            "max-files=15"
                         ]
                         
                         logger.info("Sử dụng lệnh: " + " ".join(command))
@@ -189,6 +199,14 @@ class VideoStreamManager:
                         if self.streaming_process.poll() is None:
                             # Hoạt động, thoát khỏi vòng lặp
                             logger.info(f"Định dạng {video_format} hoạt động!")
+                            
+                            # Tạo symbolic link để các trình phát dễ tìm file m3u8
+                            try:
+                                subprocess.run(["sudo", "ln", "-sf", f"{HLS_OUTPUT_DIR}/playlist.m3u8", f"{HLS_OUTPUT_DIR}/index.m3u8"])
+                                subprocess.run(["sudo", "ln", "-sf", f"{HLS_OUTPUT_DIR}/playlist.m3u8", f"{HLS_OUTPUT_DIR}/stream.m3u8"])
+                            except Exception:
+                                pass
+                            
                             break
                         else:
                             stderr = self.streaming_process.communicate()[1]
@@ -201,13 +219,14 @@ class VideoStreamManager:
                         "v4l2src", f"device={self.video_device}", "!", 
                         f"video/x-raw,width={self.width},height={self.height},framerate={self.framerate}/1", "!",
                         "videoconvert", "!",
-                        "x264enc", "tune=zerolatency", "bitrate=512", "speed-preset=ultrafast", "key-int-max=30", "!", 
+                        "x264enc", "tune=zerolatency", "bitrate=2048", "speed-preset=ultrafast", 
+                        "key-int-max=15", "!",
                         "mpegtsmux", "!",
                         "hlssink", 
                         f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
                         f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
-                        "target-duration=2", 
-                        "max-files=3"
+                        "target-duration=1", 
+                        "max-files=15"
                     ]
                     
                     logger.info("Sử dụng lệnh: " + " ".join(command))
@@ -224,7 +243,51 @@ class VideoStreamManager:
                 if self.streaming_process is None or self.streaming_process.poll() is not None:
                     stderr = self.streaming_process.communicate()[1] if self.streaming_process else b""
                     logger.error(f"Tất cả các định dạng đều thất bại: {stderr.decode()}")
-                    return False
+                    
+                    # Cuối cùng, thử phương pháp RTP/UDP thay vì HLS
+                    logger.info("Thử dùng RTP/UDP thay vì HLS...")
+                    
+                    if self.is_virtual_device:
+                        command = [
+                            "sudo", "gst-launch-1.0",
+                            "v4l2src", f"device={self.video_device}", "!", 
+                            f"video/x-raw,width={self.width},height={self.height}", "!",
+                            "videoconvert", "!",
+                            "x264enc", "tune=zerolatency", "bitrate=2048", "!",
+                            "rtph264pay", "!", "udpsink", f"host={self.ip_address}", "port=5000"
+                        ]
+                    else:
+                        command = [
+                            "sudo", "gst-launch-1.0",
+                            "v4l2src", f"device={self.video_device}", "!", 
+                            f"image/jpeg,width={self.width},height={self.height}", "!",
+                            "jpegdec", "!", "videoconvert", "!",
+                            "x264enc", "tune=zerolatency", "bitrate=2048", "!",
+                            "rtph264pay", "!", "udpsink", f"host={self.ip_address}", "port=5000"
+                        ]
+                        
+                    logger.info("Sử dụng lệnh RTP: " + " ".join(command))
+                    
+                    self.streaming_process = subprocess.Popen(
+                        command,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE
+                    )
+                    
+                    time.sleep(3)
+                    
+                    if self.streaming_process.poll() is None:
+                        logger.info(f"Đang phát qua RTP, có thể xem qua VLC với: rtp://@{self.ip_address}:5000")
+                    else:
+                        logger.error("Không thể phát qua RTP")
+                        return False
+            
+            # Tạo symbolic link để các trình phát dễ tìm file m3u8
+            try:
+                subprocess.run(["sudo", "ln", "-sf", f"{HLS_OUTPUT_DIR}/playlist.m3u8", f"{HLS_OUTPUT_DIR}/index.m3u8"])
+                subprocess.run(["sudo", "ln", "-sf", f"{HLS_OUTPUT_DIR}/playlist.m3u8", f"{HLS_OUTPUT_DIR}/stream.m3u8"])
+            except Exception:
+                pass
             
             # Cập nhật trạng thái streaming trên Firebase
             if device_uuid and id_token:
@@ -234,14 +297,31 @@ class VideoStreamManager:
                     # Thêm đường dẫn đến playlist.m3u8
                     stream_url = f"{ngrok_url}/playlist.m3u8"
                     logger.info(f"Stream URL: {stream_url}")
+                    
                     # Cập nhật trạng thái online và URI
                     update_streaming_status(device_uuid, id_token, True, stream_url)
                 else:
                     # Không có URL ngrok, chỉ cập nhật trạng thái online
                     update_streaming_status(device_uuid, id_token, True)
             
+            # Hiển thị các hướng dẫn kết nối cho người dùng
             stream_url = f"http://{self.ip_address}/playlist.m3u8"
-            logger.info(f"Streaming HLS đã bắt đầu thành công: {stream_url}")
+            
+            logger.info(f"Streaming HLS đã bắt đầu thành công:")
+            logger.info(f"- Stream URL (cho VLC): {stream_url}")
+            logger.info("Các lưu ý quan trọng để xem video trên VLC:")
+            logger.info("1. Trên VLC: Media > Open Network Stream > nhập URL stream")
+            logger.info("2. Đảm bảo máy client kết nối cùng mạng với Raspberry Pi")
+            logger.info("3. Nếu stream bị lag, hãy vào VLC > Tools > Preferences > Input & Codecs > Network caching và đặt giá trị 1000ms")
+            logger.info(f"4. Bạn cũng có thể thử các URL thay thế: http://{self.ip_address}/index.m3u8 hoặc http://{self.ip_address}/stream.m3u8")
+            
+            # Để tạo thuận lợi cho việc kiểm tra, hãy thử curl để xem nội dung playlist
+            try:
+                check_playlist = subprocess.run(["cat", f"{HLS_OUTPUT_DIR}/playlist.m3u8"], capture_output=True, text=True)
+                logger.info(f"Nội dung của playlist.m3u8:\n{check_playlist.stdout}")
+            except Exception:
+                pass
+            
             self.running = True
             return True
             
