@@ -174,7 +174,6 @@ def main():
     parser.add_argument('--config', action='store_true', help='Cấu hình ngrok với token')
     parser.add_argument('--start', action='store_true', help='Khởi động ngrok')
     parser.add_argument('--port', type=int, default=80, help='Port cần tunneling')
-    parser.add_argument('--update-uri', action='store_true', help='Cập nhật URI thiết bị trên Firebase')
     parser.add_argument('--ngrok-path', default=DEFAULT_NGROK_PATH, help='Đường dẫn đến file nhị phân ngrok')
     
     args = parser.parse_args()
