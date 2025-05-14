@@ -342,56 +342,68 @@ def update_streaming_status(device_uuid, id_token, is_online=False, ngrok_url=No
     Returns:
         bool: True nếu thành công, False nếu thất bại
     """
+    # Thời gian hiện tại theo định dạng ISO (chuẩn Firebase timestamp)
+    current_time = datetime.utcnow().isoformat() + "Z"
+    
+    # Tạo fields cần cập nhật
+    fields_to_update = {
+        "isOnline": {"booleanValue": is_online},
+        "updatedAt": {"timestampValue": current_time}
+    }
+    
+    # Thêm URI nếu được cung cấp
+    if ngrok_url:
+        fields_to_update["uri"] = {"stringValue": ngrok_url}
+    
+    # Sử dụng hàm update_document_fields để cập nhật chỉ những trường cần thiết
+    result = update_document_fields(device_uuid, id_token, fields_to_update)
+    
+    if result:
+        status = "online" if is_online else "offline"
+        print(f"Cập nhật trạng thái {status} thành công cho thiết bị với ID: {device_uuid}")
+    
+    return result
+
+def update_document_fields(device_uuid, id_token, fields_to_update):
+    """
+    Cập nhật một số trường nhất định trong document mà không ảnh hưởng đến các trường khác
+    
+    Args:
+        device_uuid (str): UUID của thiết bị
+        id_token (str): Firebase ID token để xác thực
+        fields_to_update (dict): Dictionary chứa các trường cần cập nhật theo cấu trúc Firestore
+        
+    Returns:
+        bool: True nếu thành công, False nếu thất bại
+    """
     # Header với ID token
     headers = {
         "Authorization": f"Bearer {id_token}",
         "Content-Type": "application/json"
     }
     
-    # Thời gian hiện tại theo định dạng ISO (chuẩn Firebase timestamp)
-    current_time = datetime.utcnow().isoformat() + "Z"
+    # Tạo danh sách các trường cần cập nhật cho updateMask
+    field_paths = list(fields_to_update.keys())
     
-    # Trước khi cập nhật, lấy document hiện tại để đảm bảo giữ lại các trường
-    document_url = f"{FIREBASE_FIRESTORE_URL}/devices/{device_uuid}"
+    # URL với updateMask để chỉ cập nhật các trường được chỉ định
+    query_params = "&".join([f"updateMask.fieldPaths={field}" for field in field_paths])
+    document_url = f"{FIREBASE_FIRESTORE_URL}/devices/{device_uuid}?{query_params}"
     
     try:
-        # Lấy document hiện tại
-        get_response = requests.get(document_url, headers=headers)
+        # Tạo dữ liệu cập nhật với định dạng đúng cho Firestore
+        update_data = {"fields": fields_to_update}
         
-        if get_response.status_code == 200:
-            current_data = get_response.json()
-            
-            # Tạo dữ liệu cập nhật với tất cả các trường hiện có
-            update_data = {"fields": {}}
-            
-            if "fields" in current_data:
-                # Sao chép tất cả các trường hiện có
-                for field, value in current_data["fields"].items():
-                    update_data["fields"][field] = value
-            
-            # Cập nhật các trường mới
-            update_data["fields"]["isOnline"] = {"booleanValue": is_online}
-            update_data["fields"]["updatedAt"] = {"timestampValue": current_time}
-            
-            # Thêm URI nếu được cung cấp
-            if ngrok_url:
-                update_data["fields"]["uri"] = {"stringValue": ngrok_url}
-            
-            # Sử dụng phương thức PATCH để cập nhật
-            response = requests.patch(document_url, json=update_data, headers=headers)
-            
-            if response.status_code >= 200 and response.status_code < 300:
-                status = "online" if is_online else "offline"
-                print(f"Cập nhật trạng thái {status} thành công cho thiết bị với ID: {device_uuid}")
-                return True
-            else:
-                print(f"Lỗi khi cập nhật trạng thái thiết bị: {response.text}")
-                return False
+        # Sử dụng PATCH với updateMask
+        response = requests.patch(document_url, json=update_data, headers=headers)
+        
+        if response.status_code >= 200 and response.status_code < 300:
+            print(f"Cập nhật thành công các trường {', '.join(field_paths)} cho thiết bị {device_uuid}")
+            return True
         else:
-            print(f"Không thể lấy dữ liệu hiện tại của thiết bị: {get_response.text}")
+            print(f"Lỗi khi cập nhật trường: {response.text}")
             return False
     except Exception as e:
-        print(f"Lỗi khi cập nhật trạng thái thiết bị: {str(e)}")
+        print(f"Lỗi khi cập nhật document: {str(e)}")
         return False
 
 def initialize_device(start_ngrok_if_needed=True, ngrok_path=DEFAULT_NGROK_PATH):
