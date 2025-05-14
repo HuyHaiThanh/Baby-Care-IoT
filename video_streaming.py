@@ -24,9 +24,10 @@ logger = logging.getLogger('video_streaming')
 HLS_OUTPUT_DIR = "/var/www/html"
 
 # Thiết lập các thông số HLS tối ưu cho stream thời gian thực
-HLS_SEGMENT_DURATION = 1  # Giảm xuống 1 giây thay vì 5
+HLS_SEGMENT_DURATION = 1  # Giữ nguyên 1 giây mỗi segment
 HLS_MAX_FILES = 3  # Giữ số lượng file thấp để giảm độ trễ
 HLS_PLAYLIST_SIZE = 2  # Số segment trong playlist
+HLS_CLEANUP_INTERVAL = 5  # Thêm khoảng thời gian dọn dẹp các file cũ (giây)
 
 # Biến toàn cục lưu trữ thông tin thiết bị và token
 device_uuid = None
@@ -403,7 +404,7 @@ class VideoStreamManager:
             subprocess.run(["sudo", "chmod", "-R", "777", HLS_OUTPUT_DIR], 
                          capture_output=True, text=True)
             
-            # Sử dụng chính xác pipeline được cung cấp
+            # Sử dụng chính xác pipeline được cung cấp nhưng với các tham số đã tối ưu
             command = [
                 "sudo", "-u", "www-data", "gst-launch-1.0", "-v",
                 "v4l2src", f"device={source_device}", "!", 
