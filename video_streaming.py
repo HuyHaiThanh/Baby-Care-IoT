@@ -295,7 +295,7 @@ class VideoStreamManager:
             command = [
                 "gst-launch-1.0", "-v",
                 f"v4l2src device={self.video_device}", "!",
-                f"image/jpeg,width=352,height=288,framerate=25/1", "!",
+                f"image/jpeg,width=640,height=360,framerate=25/1", "!",
                 "jpegdec", "!",
                 "videoconvert", "!",
                 f"v4l2sink device={self.virtual_device}"
@@ -407,7 +407,7 @@ class VideoStreamManager:
             command = [
                 "sudo", "-u", "www-data", "gst-launch-1.0", "-v",
                 "v4l2src", f"device={source_device}", "!", 
-                f"image/jpeg,width=352,height=288,framerate=25/1", "!",
+                f"image/jpeg,width=640,height=360,framerate=25/1", "!",
                 "jpegdec", "!",
                 "videoconvert", "!",
                 "x264enc", "tune=zerolatency", "bitrate=128", "speed-preset=ultrafast", "key-int-max=30", "!", 
