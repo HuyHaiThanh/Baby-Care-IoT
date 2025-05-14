@@ -614,28 +614,58 @@ def main():
             subprocess.run(["sudo", "chown", "-R", "www-data:www-data", HLS_OUTPUT_DIR], check=True)
             subprocess.run(["sudo", "chmod", "-R", "775", HLS_OUTPUT_DIR], check=True)
             manager.clean_hls_files()
+            # Dọn dẹp file HLS cũ
+            try:
+                subprocess.run(["sudo", "rm", "-f", f"{HLS_OUTPUT_DIR}/segment*.ts", f"{HLS_OUTPUT_DIR}/playlist*.ts"], 
+                            capture_output=True)
+                logger.info("Đã xóa các file .ts cũ")
+            except Exception as e:
+                logger.error(f"Lỗi khi xóa file .ts: {str(e)}")
+            # Kiểm tra và giải phóng camera
+            try:
+                check_busy = subprocess.run(["fuser", "-v", args.physical_device], 
+                                        capture_output=True, text=True)
+                if check_busy.returncode == 0:
+                    logger.warning(f"Camera {args.physical_device} đang được sử dụng. Giải phóng...")
+                    subprocess.run(["sudo", "fuser", "-k", args.physical_device], 
+                                capture_output=True, text=True)
+                    time.sleep(2)
+            except Exception as e:
+                logger.error(f"Lỗi khi kiểm tra camera: {str(e)}")
+            # Reset module uvcvideo
+            try:
+                subprocess.run(["sudo", "modprobe", "-r", "uvcvideo"], capture_output=True)
+                time.sleep(1)
+                subprocess.run(["sudo", "modprobe", "uvcvideo"], capture_output=True)
+                logger.info("Đã reset module uvcvideo")
+            except Exception as e:
+                logger.error(f"Lỗi khi reset module uvcvideo: {str(e)}")
             command = [
-                "sudo", "-u", "www-data", "gst-launch-1.0", "-v",
-                "v4l2src", f"device={args.physical_device}", "!", 
-                f"image/jpeg,width=352,height=288,framerate={args.framerate}/1", "!",
-                "jpegdec", "!",
-                "videoscale", "!",
-                f"video/x-raw,width={args.width},height={args.height}", "!",
-                "videoconvert", "!",
-                "x264enc", "tune=zerolatency", "bitrate=128", "speed-preset=ultrafast", "key-int-max=30", "!", 
-                "mpegtsmux", "!",
-                "hlssink", 
-                f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
-                f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
-                "target-duration=5", 
-                "max-files=10"
+                "sudo", "-u", "www-data", "ffmpeg",
+                "-f", "v4l2",
+                "-input_format", "mjpeg",
+                "-video_size", "352x288",
+                "-framerate", f"{args.framerate}",
+                "-i", args.physical_device,
+                "-vf", f"scale={args.width}:{args.height}",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-tune", "zerolatency",
+                "-b:v", "128k",
+                "-g", "30",
+                "-f", "hls",
+                "-hls_time", "5",
+                "-hls_list_size", "10",
+                "-hls_flags", "delete_segments+append_list",
+                f"{HLS_OUTPUT_DIR}/playlist.m3u8"
             ]
+            logger.info("Sử dụng lệnh ffmpeg: " + " ".join(command))
             streaming_process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
             )
-            time.sleep(10)
+            time.sleep(15)
             if streaming_process.poll() is not None:
                 stdout, stderr = streaming_process.communicate()
                 logger.error(f"Không thể bắt đầu streaming: {stderr.decode()}")
