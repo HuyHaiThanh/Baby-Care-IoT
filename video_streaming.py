@@ -85,10 +85,14 @@ def configure_apache_no_cache():
 </FilesMatch>
 """
         config_path = "/etc/apache2/conf-available/hls-no-cache.conf"
-        with open(config_path, "w") as f:
+        # Ghi file với sudo
+        with open("/tmp/hls-no-cache.conf", "w") as f:
             f.write(apache_config)
-        subprocess.run(["sudo", "a2enconf", "hls-no-cache"], capture_output=True)
-        subprocess.run(["sudo", "systemctl", "reload", "apache2"], capture_output=True)
+        subprocess.run(["sudo", "mv", "/tmp/hls-no-cache.conf", config_path], check=True)
+        subprocess.run(["sudo", "chown", "root:root", config_path], check=True)
+        subprocess.run(["sudo", "chmod", "644", config_path], check=True)
+        subprocess.run(["sudo", "a2enconf", "hls-no-cache"], check=True)
+        subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
         logger.info("Đã cấu hình Apache2 để vô hiệu hóa cache cho file HLS")
     except Exception as e:
         logger.error(f"Lỗi khi cấu hình Apache2 no-cache: {str(e)}")
@@ -205,13 +209,10 @@ class VideoStreamManager:
     def clean_hls_files(self):
         """Xóa các file HLS cũ trước khi bắt đầu streaming"""
         try:
-            for file in glob.glob(f"{HLS_OUTPUT_DIR}/segment*.ts"):
-                os.remove(file)
-                logger.info(f"Đã xóa file HLS cũ: {file}")
-            playlist_file = f"{HLS_OUTPUT_DIR}/playlist.m3u8"
-            if os.path.exists(playlist_file):
-                os.remove(playlist_file)
-                logger.info(f"Đã xóa playlist HLS cũ: {playlist_file}")
+            # Xóa file với sudo để tránh lỗi quyền
+            subprocess.run(["sudo", "rm", "-f", f"{HLS_OUTPUT_DIR}/segment*.ts"], capture_output=True)
+            subprocess.run(["sudo", "rm", "-f", f"{HLS_OUTPUT_DIR}/playlist.m3u8"], capture_output=True)
+            logger.info("Đã xóa các file HLS cũ")
         except Exception as e:
             logger.error(f"Lỗi khi xóa file HLS cũ: {str(e)}")
 
@@ -518,8 +519,8 @@ def main():
         if not device_uuid or not id_token:
             logger.warning("Không thể khởi tạo thiết bị trên Firebase. Tiếp tục mà không có Firebase.")
     manager = VideoStreamManager(
-        video_device=args.physical_device,
-        virtual_device=args.virtual_device,
+        video_device=args.physical-device,
+        virtual_device=args.virtual-device,
         width=args.width,
         height=args.height,
         framerate=args.framerate
