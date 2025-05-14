@@ -33,8 +33,8 @@ USE_VAD = True                      # Bật/tắt tính năng phát hiện giọ
 #==============================================================
 
 # Thông tin thiết bị
-DEVICE_NAME = "Baby-Monitor-Pi2B"
-DEVICE_ID = "3a54299f-37d8-452e-b048-7cb7711fe90f"
+DEVICE_NAME = "raspberrypi"  # Tên thiết bị
+DEVICE_ID = "18ff6551-820b-4aad-b714-1143629970f0"
 
 # Các thư mục
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
