@@ -246,34 +246,59 @@ def register_device(device_uuid, id_token, ngrok_url=None):
     # Thời gian hiện tại theo định dạng ISO (chuẩn Firebase timestamp)
     current_time = datetime.utcnow().isoformat() + "Z"
     
-    # Biến lưu trữ createdAt từ document hiện có nếu có
-    created_at = None
+    # Các trường threshold mặc định
+    default_fields = {
+        "cryingThreshold": {"integerValue": "40"},
+        "noBlanketThreshold": {"integerValue": "150"},
+        "proneThreshold": {"integerValue": "25"},
+        "sideThreshold": {"integerValue": "30"},
+        "isOnline": {"booleanValue": True},
+        "updatedAt": {"timestampValue": current_time},
+        "uri": {"stringValue": ngrok_url if ngrok_url else ""}
+    }
+    
+    # Giữ lại các giá trị cấu hình hiện có
+    existing_fields = {}
     if exists and device_data and "fields" in device_data:
-        if "createdAt" in device_data["fields"]:
-            created_at = device_data["fields"]["createdAt"]
-            print(f"Sử dụng giá trị createdAt hiện có: {created_at.get('timestampValue')}")
+        for field in ["cryingThreshold", "noBlanketThreshold", "proneThreshold", "sideThreshold"]:
+            if field in device_data["fields"]:
+                existing_fields[field] = device_data["fields"][field]
     
     if exists:
         # Nếu thiết bị đã tồn tại, chỉ cập nhật URI và updatedAt
         print("Cập nhật thông tin cho thiết bị đã tồn tại")
         
-        update_data = {
-            "fields": {
-                "updatedAt": {"timestampValue": current_time}
-            }
-        }
+        # Ưu tiên sử dụng giá trị hiện có, nếu không có thì sử dụng giá trị mặc định
+        update_fields = {}
+        
+        # Giữ lại các trường cấu hình hiện có
+        for field, value in existing_fields.items():
+            update_fields[field] = value
+        
+        # Cập nhật các trường cần thiết
+        update_fields["updatedAt"] = {"timestampValue": current_time}
         
         # Thêm URI nếu có
         if ngrok_url:
-            update_data["fields"]["uri"] = {"stringValue": ngrok_url}
+            update_fields["uri"] = {"stringValue": ngrok_url}
         
-        # Đảm bảo luôn có createdAt, sử dụng thời gian hiện tại nếu không có giá trị nào trước đó
-        if not created_at:
-            update_data["fields"]["createdAt"] = {"timestampValue": current_time}
+        # Thêm các trường mặc định nếu chưa có
+        for field, value in default_fields.items():
+            if field not in update_fields and field not in ["updatedAt", "uri"]:
+                update_fields[field] = value
         
-        # Sử dụng phương thức PATCH để cập nhật một số trường
+        # Sử dụng phương thức PATCH để cập nhật tất cả các trường
         document_url = f"{FIREBASE_FIRESTORE_URL}/devices/{device_uuid}"
         try:
+            # Tạo danh sách các trường cần cập nhật cho updateMask
+            field_paths = list(update_fields.keys())
+            
+            # URL với updateMask để chỉ cập nhật các trường được chỉ định
+            query_params = "&".join([f"updateMask.fieldPaths={field}" for field in field_paths])
+            document_url = f"{FIREBASE_FIRESTORE_URL}/devices/{device_uuid}?{query_params}"
+            
+            update_data = {"fields": update_fields}
+            
             response = requests.patch(document_url, json=update_data, headers=headers)
             
             if response.status_code >= 200 and response.status_code < 300:
@@ -289,20 +314,11 @@ def register_device(device_uuid, id_token, ngrok_url=None):
         # Nếu thiết bị chưa tồn tại, tạo document mới
         print("Đăng ký thiết bị mới")
         
-        device_data = {
-            "fields": {
-                "id": {"stringValue": device_uuid},
-                "createdAt": {"timestampValue": current_time},  # Luôn đặt createdAt khi tạo mới
-                "updatedAt": {"timestampValue": current_time},
-                # Cập nhật threshold theo yêu cầu mới
-                "cryingThreshold": {"integerValue": "40"},
-                "noBlanketThreshold": {"integerValue": "150"},
-                "proneThreshold": {"integerValue": "25"},
-                "sideThreshold": {"integerValue": "30"},
-                "isOnline": {"booleanValue": True},  # Mặc định là true khi tạo mới
-                "uri": {"stringValue": ngrok_url if ngrok_url else ""}
-            }
-        }
+        # Tạo device_data với các trường mặc định
+        device_fields = default_fields.copy()
+        device_fields["id"] = {"stringValue": device_uuid}
+        device_fields["updatedAt"] = {"timestampValue": current_time}
+        device_fields["uri"] = {"stringValue": ngrok_url if ngrok_url else ""}
         
         # Tạo document với ID = deviceId
         try:
@@ -312,7 +328,7 @@ def register_device(device_uuid, id_token, ngrok_url=None):
                 "writes": [{
                     "update": {
                         "name": f"projects/{PROJECT_ID}/databases/(default)/documents/devices/{device_uuid}",
-                        "fields": device_data["fields"]
+                        "fields": device_fields
                     }
                 }]
             }
@@ -342,10 +358,17 @@ def update_streaming_status(device_uuid, id_token, is_online=False, ngrok_url=No
     Returns:
         bool: True nếu thành công, False nếu thất bại
     """
+    # Kiểm tra thiết bị hiện có và lấy thông tin
+    exists, device_data = check_device_exists(device_uuid, id_token)
+    
+    if not exists:
+        print(f"Không tìm thấy thiết bị với ID {device_uuid}")
+        return False
+    
     # Thời gian hiện tại theo định dạng ISO (chuẩn Firebase timestamp)
     current_time = datetime.utcnow().isoformat() + "Z"
     
-    # Tạo fields cần cập nhật
+    # Trường cần cập nhật
     fields_to_update = {
         "isOnline": {"booleanValue": is_online},
         "updatedAt": {"timestampValue": current_time}
@@ -354,15 +377,43 @@ def update_streaming_status(device_uuid, id_token, is_online=False, ngrok_url=No
     # Thêm URI nếu được cung cấp
     if ngrok_url:
         fields_to_update["uri"] = {"stringValue": ngrok_url}
+        
+    # Bảo toàn các trường threshold từ thiết bị hiện có
+    if exists and device_data and "fields" in device_data:
+        for field in ["cryingThreshold", "noBlanketThreshold", "proneThreshold", "sideThreshold"]:
+            if field in device_data["fields"]:
+                fields_to_update[field] = device_data["fields"][field]
     
-    # Sử dụng hàm update_document_fields để cập nhật chỉ những trường cần thiết
-    result = update_document_fields(device_uuid, id_token, fields_to_update)
+    # Header với ID token
+    headers = {
+        "Authorization": f"Bearer {id_token}",
+        "Content-Type": "application/json"
+    }
     
-    if result:
-        status = "online" if is_online else "offline"
-        print(f"Cập nhật trạng thái {status} thành công cho thiết bị với ID: {device_uuid}")
+    # Tạo danh sách các trường cần cập nhật cho updateMask
+    field_paths = list(fields_to_update.keys())
     
-    return result
+    # URL với updateMask để chỉ cập nhật các trường được chỉ định
+    query_params = "&".join([f"updateMask.fieldPaths={field}" for field in field_paths])
+    document_url = f"{FIREBASE_FIRESTORE_URL}/devices/{device_uuid}?{query_params}"
+    
+    try:
+        # Tạo dữ liệu cập nhật với định dạng đúng cho Firestore
+        update_data = {"fields": fields_to_update}
+        
+        # Sử dụng PATCH với updateMask
+        response = requests.patch(document_url, json=update_data, headers=headers)
+        
+        if response.status_code >= 200 and response.status_code < 300:
+            status = "online" if is_online else "offline"
+            print(f"Cập nhật trạng thái {status} thành công cho thiết bị với ID: {device_uuid}")
+            return True
+        else:
+            print(f"Lỗi khi cập nhật trường: {response.text}")
+            return False
+    except Exception as e:
+        print(f"Lỗi khi cập nhật document: {str(e)}")
+        return False
 
 def update_document_fields(device_uuid, id_token, fields_to_update):
     """
