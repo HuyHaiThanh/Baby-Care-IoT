@@ -259,7 +259,7 @@ def register_device(device_uuid, id_token, ngrok_url=None):
     
     # Giữ lại các giá trị cấu hình hiện có
     existing_fields = {}
-    if exists and device_data and "fields" in dwdvice_data:
+    if exists and device_data and "fields" in device_data:
         for field in ["cryingThreshold", "noBlanketThreshold", "proneThreshold", "sideThreshold"]:
             if field in device_data["fields"]:
                 existing_fields[field] = device_data["fields"][field]
