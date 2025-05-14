@@ -635,7 +635,7 @@ def main():
     parser.add_argument('--width', type=int, default=640, help='Chiều rộng video')
     parser.add_argument('--height', type=int, default=480, help='Chiều cao video')
     parser.add_argument('--framerate', type=int, default=30, help='Tốc độ khung hình')
-    parser.add_argument('--no-firebase', action='storetrue', help='Không sử dụng Firebase')
+    parser.add_argument('--no-firebase', action='store_true', help='Không sử dụng Firebase')
     parser.add_argument('--direct', action='store_true', help='Stream trực tiếp từ camera vật lý, không dùng virtual device')
     
     args = parser.parse_args()
