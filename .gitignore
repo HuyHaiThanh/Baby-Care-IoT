@@ -1,0 +1,26 @@
+# Ignore environment variables file
+.env
+
+# Ignore local device configuration
+device_config.json
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Logs
+*.log
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+device_uuid.json
+logs/
+photos/
