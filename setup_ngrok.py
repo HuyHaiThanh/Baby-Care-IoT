@@ -188,7 +188,7 @@ def main():
             print("Không thể khởi động ngrok.")
     
     # Nếu không có tùy chọn nào được chỉ định, hiển thị help
-    if not (args.config or args.start or args.update_uri):
+    if not (args.config or args.start):
         parser.print_help()
 
 if __name__ == "__main__":
