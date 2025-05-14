@@ -16,105 +16,114 @@ logging.basicConfig(
 logger = logging.getLogger('virtual_camera')
 
 def find_available_camera_devices():
-    """Tìm tất cả các thiết bị camera vật lý có sẵn"""
+    """Tìm các thiết bị camera vật lý có sẵn và hoạt động"""
     available_devices = []
-    try:
-        # Liệt kê các thiết bị video
-        result = subprocess.run(["v4l2-ctl", "--list-devices"], 
-                             capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            # Tách thông tin thành các khối thiết bị
-            device_blocks = result.stdout.split("\n\n")
+    
+    # Ưu tiên kiểm tra /dev/video0 trước vì thường là thiết bị camera chính
+    if os.path.exists("/dev/video0"):
+        try:
+            # Thử capture một frame từ thiết bị để xác nhận nó hoạt động
+            test_cmd = [
+                "ffmpeg", "-f", "v4l2", "-hide_banner", "-t", "0.1", 
+                "-i", "/dev/video0", "-frames:v", "1", "-f", "null", "-"
+            ]
+            test_process = subprocess.run(
+                test_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=2
+            )
             
-            for block in device_blocks:
-                if not block.strip():
-                    continue
+            if test_process.returncode == 0 or "Immediate exit requested" in test_process.stderr.decode():
+                logger.info(f"Tìm thấy thiết bị camera hoạt động: /dev/video0")
+                return ["/dev/video0"]  # Trả về ngay thiết bị đầu tiên hoạt động
+        except Exception as e:
+            logger.warning(f"Lỗi khi kiểm tra /dev/video0: {str(e)}")
+    
+    # Kiểm tra các thiết bị camera theo thứ tự
+    # VIDEO_DEVICE_ID được sắp xếp để ưu tiên các thiết bị thấp trước
+    for i in range(10):  # Chỉ kiểm tra video0-video9 (thiết bị phổ biến nhất)
+        device = f"/dev/video{i}"
+        if device == "/dev/video0":  # Đã kiểm tra ở trên
+            continue
+            
+        if os.path.exists(device):
+            try:
+                # Kiểm tra xác định đây có phải là thiết bị capture thật không
+                test_cmd = [
+                    "v4l2-ctl", "--device", device, "--all"
+                ]
+                test_process = subprocess.run(
+                    test_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=2
+                )
                 
-                # Tìm các đường dẫn thiết bị
-                device_paths = re.findall(r'(/dev/video\d+)', block)
-                
-                for device in device_paths:
-                    # Kiểm tra kỹ hơn để xác định đây có phải là thiết bị capture có thể sử dụng được không
+                # Tìm các dấu hiệu đây là camera thật
+                output = test_process.stdout.decode()
+                if "Format Video Capture" in output and "loopback" not in output:
+                    # Thử capture một frame để xác nhận hoạt động
+                    capture_cmd = [
+                        "ffmpeg", "-f", "v4l2", "-hide_banner", "-t", "0.1", 
+                        "-i", device, "-frames:v", "1", "-f", "null", "-"
+                    ]
+                    
                     try:
-                        # Kiểm tra bằng ffmpeg xem có đọc được từ thiết bị không
-                        check_cmd = [
-                            "ffmpeg", "-f", "v4l2", "-list_formats", "all", 
-                            "-i", device, "-hide_banner"
-                        ]
-                        check_process = subprocess.run(
-                            check_cmd, 
-                            capture_output=True, 
-                            text=True,
-                            timeout=1  # Giới hạn thời gian chờ
+                        capture_process = subprocess.run(
+                            capture_cmd,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE,
+                            timeout=2
                         )
                         
-                        # Nếu có các định dạng pixel được liệt kê, thiết bị có thể capture được
-                        if "Pixel format" in check_process.stderr and "Input/output error" not in check_process.stderr:
+                        if capture_process.returncode == 0 or "Immediate exit requested" in capture_process.stderr.decode():
                             logger.info(f"Tìm thấy thiết bị camera hoạt động: {device}")
-                            available_devices.append(device)
-                            # Tìm thấy thiết bị thực hoạt động, có thể dừng việc tìm kiếm
-                            return [device]
-                            
-                    except (subprocess.SubprocessError, subprocess.TimeoutExpired) as e:
-                        # Thử cách khác để kiểm tra
-                        try:
-                            caps_check = subprocess.run(
-                                ["v4l2-ctl", "--device", device, "--all"], 
-                                capture_output=True, 
-                                text=True,
-                                timeout=1
-                            )
-                            
-                            # Kiểm tra xem thiết bị có phải là camera thực không (không phải loopback hay ảo)
-                            if ("Format Video Capture" in caps_check.stdout and 
-                                "loopback" not in caps_check.stdout and
-                                "Input/output error" not in caps_check.stderr):
-                                
-                                logger.info(f"Tìm thấy thiết bị camera: {device}")
-                                available_devices.append(device)
-                        except Exception:
-                            pass
+                            return [device]  # Trả về ngay thiết bị hoạt động
+                    except Exception as e:
+                        logger.debug(f"Không thể capture từ {device}: {str(e)}")
+            except Exception as e:
+                logger.debug(f"Lỗi khi kiểm tra {device}: {str(e)}")
+    
+    # Nếu không tìm thấy thiết bị camera tiêu chuẩn, thử các thiết bị khác
+    try:
+        # Liệt kê tất cả các thiết bị video
+        cmd = ["ls", "-l", "/dev/video*"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            # Tìm tất cả các đường dẫn thiết bị
+            device_paths = re.findall(r'/dev/video\d+', result.stdout)
             
-            if not available_devices:
-                # Thử tìm bằng cách đơn giản hơn nếu không tìm thấy
-                for i in range(10):  # Thử từ video0 đến video9
-                    device = f"/dev/video{i}"
-                    if os.path.exists(device):
-                        try:
-                            # Kiểm tra nhanh
-                            probe_cmd = ["ffmpeg", "-f", "v4l2", "-hide_banner", "-t", "0.1", "-i", device, "-frames:v", "1", "-f", "null", "-"]
-                            probe_result = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1)
-                            if probe_result.returncode == 0 or "Immediate exit requested" in probe_result.stderr.decode():
-                                available_devices.append(device)
-                                logger.info(f"Tìm thấy thiết bị camera hoạt động (phương pháp thay thế): {device}")
-                                return [device]
-                        except Exception:
-                            continue
-        else:
-            # Nếu v4l2-ctl không hoạt động, thử tìm bằng cách kiểm tra các file thiết bị
-            for i in range(10):
-                device = f"/dev/video{i}"
-                if os.path.exists(device):
+            for device in device_paths:
+                if device not in ["/dev/video0"] + [f"/dev/video{i}" for i in range(1, 10)]:  # Bỏ qua các thiết bị đã kiểm tra
                     try:
                         # Kiểm tra nhanh
-                        probe_cmd = ["ffmpeg", "-f", "v4l2", "-hide_banner", "-t", "0.1", "-i", device, "-frames:v", "1", "-f", "null", "-"]
-                        probe_result = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1)
-                        if probe_result.returncode == 0 or "Immediate exit requested" in probe_result.stderr.decode():
-                            available_devices.append(device)
-                            logger.info(f"Tìm thấy thiết bị camera hoạt động (phương pháp thay thế): {device}")
+                        test_cmd = [
+                            "ffmpeg", "-f", "v4l2", "-hide_banner", "-t", "0.1", 
+                            "-i", device, "-frames:v", "1", "-f", "null", "-"
+                        ]
+                        test_process = subprocess.run(
+                            test_cmd, 
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE,
+                            timeout=2
+                        )
+                        
+                        if test_process.returncode == 0 or "Immediate exit requested" in test_process.stderr.decode():
+                            logger.info(f"Tìm thấy thiết bị camera hoạt động: {device}")
                             return [device]
                     except Exception:
                         continue
     except Exception as e:
         logger.error(f"Lỗi khi tìm thiết bị camera: {str(e)}")
     
-    # Mặc định là video0 nếu có lỗi hoặc không tìm thấy thiết bị nào
-    if not available_devices and os.path.exists("/dev/video0"):
-        logger.warning("Không tìm thấy thiết bị camera hoạt động. Thử dùng /dev/video0 như mặc định")
-        available_devices.append("/dev/video0")
+    logger.warning("Không tìm thấy thiết bị camera hoạt động")
     
-    return available_devices
+    # Trả về một thiết bị camera mặc định nếu không tìm thấy thiết bị hoạt động
+    if os.path.exists("/dev/video0"):
+        return ["/dev/video0"]
+    return []
 
 class VirtualCameraManager:
     def __init__(self, physical_device="/dev/video0", virtual_device="/dev/video10"):
