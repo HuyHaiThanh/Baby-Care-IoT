@@ -90,7 +90,7 @@ def find_available_camera_devices():
 
 class VideoStreamManager:
     def __init__(self, video_device="/dev/video0", virtual_device="/dev/video10", 
-                 width=352, height=288, framerate=25):
+                 width=640, height=360, framerate=25):
         """
         Khởi tạo quản lý luồng video
         
