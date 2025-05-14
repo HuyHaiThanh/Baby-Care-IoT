@@ -57,6 +57,27 @@ class VideoStreamManager:
         self.streaming_process = None
         self.running = False
         self.ip_address = get_ip_address()
+        
+        # Kiểm tra xem thiết bị là camera thực hay thiết bị ảo
+        try:
+            device_info = subprocess.run(
+                ["v4l2-ctl", "-d", video_device, "--info"],
+                capture_output=True,
+                text=True,
+                stderr=subprocess.DEVNULL
+            ).stdout
+            # Nếu trong thông tin thiết bị có từ khóa loopback thì đây là thiết bị ảo
+            self.is_virtual_device = "loopback" in device_info.lower() or "v4l2loopback" in device_info.lower()
+            # Kiểm tra thêm từ số thiết bị
+            if not self.is_virtual_device:
+                video_num = int(video_device.split('video')[-1])
+                self.is_virtual_device = video_num >= 10  # Thiết bị từ video10 trở lên thường là thiết bị ảo
+        except Exception:
+            # Nếu không kiểm tra được, giả định từ tên thiết bị
+            self.is_virtual_device = int(video_device.split('video')[-1]) >= 10
+        
+        logger.info(f"Thiết bị {video_device} được xác định là {'thiết bị ảo' if self.is_virtual_device else 'camera thực'}")
+        
         # Đăng ký hàm cleanup khi tắt ứng dụng
         atexit.register(self.cleanup)
     
@@ -78,20 +99,40 @@ class VideoStreamManager:
             subprocess.run(["sudo", "chmod", "-R", "777", HLS_OUTPUT_DIR], 
                          capture_output=True, text=True)
             
-            # Câu lệnh gst-launch-1.0 đơn giản và hiệu quả để streaming video qua HLS
-            command = [
-                "sudo", "gst-launch-1.0",
-                "v4l2src", f"device={self.video_device}", "!", 
-                f"image/jpeg,width={self.width},height={self.height},framerate={self.framerate}/1", "!",
-                "jpegdec", "!",
-                "x264enc", "tune=zerolatency", "bitrate=512", "speed-preset=ultrafast", "key-int-max=30", "!", 
-                "mpegtsmux", "!",
-                "hlssink", 
-                f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
-                f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
-                "target-duration=2", 
-                "max-files=3"
-            ]
+            # Câu lệnh gst-launch-1.0 cho streaming
+            # Sử dụng định dạng khác nhau tùy theo loại thiết bị
+            if self.is_virtual_device:
+                # Thiết bị ảo - sử dụng video/x-raw
+                logger.info("Sử dụng định dạng video/x-raw cho thiết bị ảo")
+                command = [
+                    "sudo", "gst-launch-1.0",
+                    "v4l2src", f"device={self.video_device}", "!", 
+                    f"video/x-raw,width={self.width},height={self.height},framerate={self.framerate}/1", "!",
+                    "videoconvert", "!",
+                    "x264enc", "tune=zerolatency", "bitrate=512", "speed-preset=ultrafast", "key-int-max=30", "!", 
+                    "mpegtsmux", "!",
+                    "hlssink", 
+                    f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
+                    f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
+                    "target-duration=2", 
+                    "max-files=3"
+                ]
+            else:
+                # Thiết bị thật - sử dụng image/jpeg
+                logger.info("Sử dụng định dạng image/jpeg cho camera thực")
+                command = [
+                    "sudo", "gst-launch-1.0",
+                    "v4l2src", f"device={self.video_device}", "!", 
+                    f"image/jpeg,width={self.width},height={self.height},framerate={self.framerate}/1", "!",
+                    "jpegdec", "!",
+                    "x264enc", "tune=zerolatency", "bitrate=512", "speed-preset=ultrafast", "key-int-max=30", "!", 
+                    "mpegtsmux", "!",
+                    "hlssink", 
+                    f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
+                    f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
+                    "target-duration=2", 
+                    "max-files=3"
+                ]
             
             logger.info("Sử dụng lệnh: " + " ".join(command))
             
@@ -107,7 +148,83 @@ class VideoStreamManager:
                 # Nếu process đã kết thúc, có lỗi
                 stdout, stderr = self.streaming_process.communicate()
                 logger.error(f"Không thể bắt đầu streaming: {stderr.decode()}")
-                return False
+                
+                # Thử với định dạng ngược lại
+                logger.info("Thử lại với định dạng khác...")
+                
+                if self.is_virtual_device:
+                    # Thử với một số định dạng khác
+                    formats_to_try = [
+                        "video/x-raw,format=YUY2",  # YUY2 thường được hỗ trợ rộng rãi
+                        "video/x-raw,format=RGB",   # RGB
+                        "video/x-raw"               # Để GStreamer tự động xác định
+                    ]
+                    
+                    for video_format in formats_to_try:
+                        logger.info(f"Thử với định dạng: {video_format}")
+                        command = [
+                            "sudo", "gst-launch-1.0",
+                            "v4l2src", f"device={self.video_device}", "!", 
+                            f"{video_format},width={self.width},height={self.height},framerate={self.framerate}/1", "!",
+                            "videoconvert", "!",
+                            "x264enc", "tune=zerolatency", "bitrate=512", "speed-preset=ultrafast", "key-int-max=30", "!", 
+                            "mpegtsmux", "!",
+                            "hlssink", 
+                            f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
+                            f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
+                            "target-duration=2", 
+                            "max-files=3"
+                        ]
+                        
+                        logger.info("Sử dụng lệnh: " + " ".join(command))
+                        
+                        self.streaming_process = subprocess.Popen(
+                            command,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE
+                        )
+                        
+                        time.sleep(3)
+                        
+                        if self.streaming_process.poll() is None:
+                            # Hoạt động, thoát khỏi vòng lặp
+                            logger.info(f"Định dạng {video_format} hoạt động!")
+                            break
+                        else:
+                            stderr = self.streaming_process.communicate()[1]
+                            logger.error(f"Định dạng {video_format} không hoạt động: {stderr.decode()}")
+                            self.streaming_process = None
+                else:
+                    # Thử với video/x-raw nếu đang sử dụng thiết bị thật
+                    command = [
+                        "sudo", "gst-launch-1.0",
+                        "v4l2src", f"device={self.video_device}", "!", 
+                        f"video/x-raw,width={self.width},height={self.height},framerate={self.framerate}/1", "!",
+                        "videoconvert", "!",
+                        "x264enc", "tune=zerolatency", "bitrate=512", "speed-preset=ultrafast", "key-int-max=30", "!", 
+                        "mpegtsmux", "!",
+                        "hlssink", 
+                        f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
+                        f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
+                        "target-duration=2", 
+                        "max-files=3"
+                    ]
+                    
+                    logger.info("Sử dụng lệnh: " + " ".join(command))
+                    
+                    self.streaming_process = subprocess.Popen(
+                        command,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE
+                    )
+                    
+                    time.sleep(3)
+                
+                # Kiểm tra lần cuối
+                if self.streaming_process is None or self.streaming_process.poll() is not None:
+                    stderr = self.streaming_process.communicate()[1] if self.streaming_process else b""
+                    logger.error(f"Tất cả các định dạng đều thất bại: {stderr.decode()}")
+                    return False
             
             # Cập nhật trạng thái streaming trên Firebase
             if device_uuid and id_token:
