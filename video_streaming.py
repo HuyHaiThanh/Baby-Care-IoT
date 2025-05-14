@@ -519,8 +519,8 @@ def main():
         if not device_uuid or not id_token:
             logger.warning("Không thể khởi tạo thiết bị trên Firebase. Tiếp tục mà không có Firebase.")
     manager = VideoStreamManager(
-        video_device=args.physical-device,
-        virtual_device=args.virtual-device,
+        video_device=args.physical_device,
+        virtual_device=args.virtual_device,
         width=args.width,
         height=args.height,
         framerate=args.framerate
