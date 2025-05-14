@@ -194,7 +194,45 @@ class CameraClient:
         
         if not devices:
             return None
+        
+        # Luôn ưu tiên thiết bị /dev/video0 nếu có (thiết bị vật lý)
+        for device in devices:
+            if device['device'] == '/dev/video0':
+                logger.info("Found physical camera device: /dev/video0")
+                return device
             
+        # Lọc bỏ các thiết bị ảo v4l2loopback
+        physical_devices = []
+        for device in devices:
+            # Kiểm tra xem đây có phải là thiết bị ảo không
+            try:
+                # Sử dụng v4l2-ctl để kiểm tra thông tin thiết bị
+                proc = subprocess.run(
+                    ['v4l2-ctl', '--device', device['device'], '--info'], 
+                    stdout=subprocess.PIPE, 
+                    stderr=subprocess.PIPE
+                )
+                device_info = proc.stdout.decode().lower()
+                
+                # Nếu thiết bị có chứa từ khóa loopback hoặc virtual, bỏ qua
+                if 'loopback' in device_info or 'virtual' in device_info:
+                    logger.info(f"Skipping virtual device: {device['device']}")
+                    continue
+                
+                # Thêm vào danh sách thiết bị vật lý
+                physical_devices.append(device)
+                
+            except Exception:
+                # Nếu không thể kiểm tra, vẫn thêm vào danh sách để xử lý sau
+                physical_devices.append(device)
+        
+        # Nếu có thiết bị vật lý, ưu tiên thiết bị có index thấp nhất (thường là thiết bị cắm đầu tiên)
+        if physical_devices:
+            physical_devices.sort(key=lambda d: int(d['index']))
+            logger.info(f"Using physical camera device: {physical_devices[0]['device']}")
+            return physical_devices[0]
+            
+        # Nếu không tìm thấy thiết bị vật lý, quay lại cách cũ
         # Prefer USB cameras with camera, webcam, usb in name
         for device in devices:
             if 'camera' in device.get('name', '').lower() or 'webcam' in device.get('name', '').lower() or 'usb' in device.get('name', '').lower():
