@@ -23,6 +23,11 @@ logger = logging.getLogger('video_streaming')
 # Đường dẫn lưu trữ HLS
 HLS_OUTPUT_DIR = "/var/www/html"
 
+# Thiết lập các thông số HLS tối ưu cho stream thời gian thực
+HLS_SEGMENT_DURATION = 1  # Giảm xuống 1 giây thay vì 5
+HLS_MAX_FILES = 3  # Giữ số lượng file thấp để giảm độ trễ
+HLS_PLAYLIST_SIZE = 2  # Số segment trong playlist
+
 # Biến toàn cục lưu trữ thông tin thiết bị và token
 device_uuid = None
 id_token = None
@@ -410,8 +415,10 @@ class VideoStreamManager:
                 "hlssink", 
                 f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
                 f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
-                "target-duration=5", 
-                "max-files=10"
+                f"target-duration={HLS_SEGMENT_DURATION}", 
+                f"max-files={HLS_MAX_FILES}",
+                f"playlist-length={HLS_PLAYLIST_SIZE}",
+                "delete-segments=true"
             ]
             
             logger.info("Sử dụng lệnh: " + " ".join(command))
@@ -570,7 +577,7 @@ class VideoStreamManager:
         v4l2_setup_success = self.setup_v4l2loopback()
         
         # Chỉ cố gắng sao chép video nếu thiết lập v4l2loopback thành công
-        if v4l2_setup_success:
+        if (v4l2_setup_success):
             if self.start_video_copying():
                 logger.info("Sao chép video thành công từ camera thật sang thiết bị ảo")
             else:
@@ -685,8 +692,10 @@ def main():
                 "hlssink", 
                 f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
                 f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
-                "target-duration=5", 
-                "max-files=10"
+                f"target-duration={HLS_SEGMENT_DURATION}", 
+                f"max-files={HLS_MAX_FILES}",
+                f"playlist-length={HLS_PLAYLIST_SIZE}",
+                "delete-segments=true"
             ]
             
             streaming_process = subprocess.Popen(
