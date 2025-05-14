@@ -35,31 +35,84 @@ def find_available_camera_devices():
                 device_paths = re.findall(r'(/dev/video\d+)', block)
                 
                 for device in device_paths:
-                    # Kiểm tra xem đây có phải là thiết bị capture không
-                    caps_check = subprocess.run(["v4l2-ctl", "--device", device, "--all"], 
-                                            capture_output=True, text=True)
-                    
-                    if "Format Video Capture" in caps_check.stdout and "loopback" not in caps_check.stdout:
-                        available_devices.append(device)
-                        logger.info(f"Tìm thấy thiết bị camera: {device}")
+                    # Kiểm tra kỹ hơn để xác định đây có phải là thiết bị capture có thể sử dụng được không
+                    try:
+                        # Kiểm tra bằng ffmpeg xem có đọc được từ thiết bị không
+                        check_cmd = [
+                            "ffmpeg", "-f", "v4l2", "-list_formats", "all", 
+                            "-i", device, "-hide_banner"
+                        ]
+                        check_process = subprocess.run(
+                            check_cmd, 
+                            capture_output=True, 
+                            text=True,
+                            timeout=1  # Giới hạn thời gian chờ
+                        )
+                        
+                        # Nếu có các định dạng pixel được liệt kê, thiết bị có thể capture được
+                        if "Pixel format" in check_process.stderr and "Input/output error" not in check_process.stderr:
+                            logger.info(f"Tìm thấy thiết bị camera hoạt động: {device}")
+                            available_devices.append(device)
+                            # Tìm thấy thiết bị thực hoạt động, có thể dừng việc tìm kiếm
+                            return [device]
+                            
+                    except (subprocess.SubprocessError, subprocess.TimeoutExpired) as e:
+                        # Thử cách khác để kiểm tra
+                        try:
+                            caps_check = subprocess.run(
+                                ["v4l2-ctl", "--device", device, "--all"], 
+                                capture_output=True, 
+                                text=True,
+                                timeout=1
+                            )
+                            
+                            # Kiểm tra xem thiết bị có phải là camera thực không (không phải loopback hay ảo)
+                            if ("Format Video Capture" in caps_check.stdout and 
+                                "loopback" not in caps_check.stdout and
+                                "Input/output error" not in caps_check.stderr):
+                                
+                                logger.info(f"Tìm thấy thiết bị camera: {device}")
+                                available_devices.append(device)
+                        except Exception:
+                            pass
             
             if not available_devices:
                 # Thử tìm bằng cách đơn giản hơn nếu không tìm thấy
                 for i in range(10):  # Thử từ video0 đến video9
                     device = f"/dev/video{i}"
                     if os.path.exists(device):
-                        available_devices.append(device)
+                        try:
+                            # Kiểm tra nhanh
+                            probe_cmd = ["ffmpeg", "-f", "v4l2", "-hide_banner", "-t", "0.1", "-i", device, "-frames:v", "1", "-f", "null", "-"]
+                            probe_result = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1)
+                            if probe_result.returncode == 0 or "Immediate exit requested" in probe_result.stderr.decode():
+                                available_devices.append(device)
+                                logger.info(f"Tìm thấy thiết bị camera hoạt động (phương pháp thay thế): {device}")
+                                return [device]
+                        except Exception:
+                            continue
         else:
             # Nếu v4l2-ctl không hoạt động, thử tìm bằng cách kiểm tra các file thiết bị
             for i in range(10):
                 device = f"/dev/video{i}"
                 if os.path.exists(device):
-                    available_devices.append(device)
+                    try:
+                        # Kiểm tra nhanh
+                        probe_cmd = ["ffmpeg", "-f", "v4l2", "-hide_banner", "-t", "0.1", "-i", device, "-frames:v", "1", "-f", "null", "-"]
+                        probe_result = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1)
+                        if probe_result.returncode == 0 or "Immediate exit requested" in probe_result.stderr.decode():
+                            available_devices.append(device)
+                            logger.info(f"Tìm thấy thiết bị camera hoạt động (phương pháp thay thế): {device}")
+                            return [device]
+                    except Exception:
+                        continue
     except Exception as e:
         logger.error(f"Lỗi khi tìm thiết bị camera: {str(e)}")
-        # Mặc định là video0 nếu có lỗi
-        if os.path.exists("/dev/video0"):
-            available_devices.append("/dev/video0")
+    
+    # Mặc định là video0 nếu có lỗi hoặc không tìm thấy thiết bị nào
+    if not available_devices and os.path.exists("/dev/video0"):
+        logger.warning("Không tìm thấy thiết bị camera hoạt động. Thử dùng /dev/video0 như mặc định")
+        available_devices.append("/dev/video0")
     
     return available_devices
 
