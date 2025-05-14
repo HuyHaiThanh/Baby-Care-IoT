@@ -174,19 +174,55 @@ def get_ngrok_url():
         str: URL ngrok nếu thành công, None nếu thất bại
     """
     try:
-        response = requests.get("http://127.0.0.1:4040/api/tunnels", timeout=3)
+        # Thử lấy URL từ ngrok API
+        print("Đang truy cập API ngrok để lấy URL công khai...")
+        response = requests.get("http://127.0.0.1:4040/api/tunnels", timeout=5)
+        print(f"Mã trạng thái API: {response.status_code}")
+        
         if response.status_code == 200:
             data = response.json()
-            # Ưu tiên URL HTTPS
-            for tunnel in data.get('tunnels', []):
-                if tunnel.get('proto') == 'https':
-                    return tunnel.get('public_url')
+            print(f"Dữ liệu tunnels từ API: {data}")
             
-            # Nếu không có HTTPS, lấy URL đầu tiên
-            if data.get('tunnels'):
-                return data['tunnels'][0].get('public_url')
+            if 'tunnels' in data and len(data['tunnels']) > 0:
+                # Ưu tiên URL HTTPS
+                for tunnel in data.get('tunnels', []):
+                    if tunnel.get('proto') == 'https':
+                        url = tunnel.get('public_url')
+                        print(f"Tìm thấy URL HTTPS: {url}")
+                        return url
+                
+                # Nếu không có HTTPS, lấy URL đầu tiên
+                url = data['tunnels'][0].get('public_url')
+                print(f"Không tìm thấy URL HTTPS, sử dụng URL đầu tiên: {url}")
+                return url
+            else:
+                print("Không tìm thấy tunnels nào trong dữ liệu API")
+        else:
+            print(f"Không thể truy cập API ngrok. Mã trạng thái: {response.status_code}")
         
-        print(f"Không tìm thấy URL ngrok.")
+        # Thử phương pháp thay thế bằng cách chạy lệnh ngrok
+        print("Thử phương pháp thay thế để lấy URL...")
+        try:
+            import re
+            result = subprocess.run(["ps", "-ef", "|", "grep", "ngrok"], 
+                                  shell=True, capture_output=True, text=True)
+            # Tìm URL trong kết quả của lệnh ps
+            output = result.stdout
+            print(f"Kết quả kiểm tra tiến trình ngrok: {output}")
+            
+            # Lệnh status để kiểm tra
+            status_cmd = subprocess.run(["ngrok", "status", "--api=http://localhost:4040"], 
+                                      capture_output=True, text=True)
+            print(f"Kết quả lệnh ngrok status: {status_cmd.stdout}")
+            
+            # Tìm URL trong kết quả status
+            urls = re.findall(r'(https?://[a-zA-Z0-9]+\.ngrok\.io)', status_cmd.stdout)
+            if urls:
+                print(f"Tìm thấy URL trong kết quả status: {urls[0]}")
+                return urls[0]
+        except Exception as e:
+            print(f"Không thể sử dụng phương pháp thay thế: {e}")
+        
         return None
     except Exception as e:
         print(f"Lỗi khi lấy URL ngrok: {e}")
