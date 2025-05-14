@@ -165,46 +165,6 @@ def start_ngrok(port=80, ngrok_path=DEFAULT_NGROK_PATH):
         print(f"Lỗi khi khởi động ngrok: {e}")
         return None
 
-def update_device_uri():
-    """
-    Cập nhật URI của thiết bị trên Firebase với URL ngrok mới
-    
-    Returns:
-        bool: True nếu thành công, False nếu thất bại
-    """
-    # Xác thực với Firebase
-    auth_result = authenticate_firebase()
-    if not auth_result:
-        print("Không thể xác thực với Firebase.")
-        return False
-    
-    id_token, user_id = auth_result
-    
-    # Lấy UUID của thiết bị
-    device_uuid = get_device_uuid()
-    print(f"UUID của thiết bị: {device_uuid}")
-    
-    # Kiểm tra và lấy URL ngrok
-    if is_ngrok_running():
-        ngrok_url = get_ngrok_url()
-        if ngrok_url:
-            print(f"URL ngrok: {ngrok_url}")
-            
-            # Cập nhật URI trên Firebase
-            result = update_streaming_status(device_uuid, id_token, True, ngrok_url)
-            if result:
-                print("Đã cập nhật URI thiết bị thành công.")
-                return True
-            else:
-                print("Lỗi khi cập nhật URI thiết bị.")
-                return False
-        else:
-            print("Không thể lấy URL ngrok mặc dù ngrok đang chạy.")
-            return False
-    else:
-        print("ngrok không chạy. Vui lòng khởi động ngrok trước.")
-        return False
-
 def main():
     """
     Hàm chính để thiết lập và quản lý ngrok
@@ -227,9 +187,6 @@ def main():
         url = start_ngrok(args.port, args.ngrok_path)
         if not url:
             print("Không thể khởi động ngrok.")
-    
-    if args.update_uri:
-        update_device_uri()
     
     # Nếu không có tùy chọn nào được chỉ định, hiển thị help
     if not (args.config or args.start or args.update_uri):
