@@ -100,14 +100,3 @@ Các log file được lưu trong thư mục `logs/`:
 
 Để xem thông tin debug chi tiết, chạy ứng dụng với tham số `--debug`.
 
-## Đóng góp
-
-Nếu bạn muốn đóng góp vào dự án, vui lòng:
-1. Fork repository
-2. Tạo nhánh feature mới
-3. Commit các thay đổi
-4. Tạo Pull Request
-
-## Giấy phép
-
-Dự án này được phân phối dưới giấy phép [định nghĩa giấy phép của bạn].

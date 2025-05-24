@@ -50,12 +50,11 @@ class AudioRecorder:
         self.window_size = window_size
         self.slide_size = slide_size
         self.max_queue_size = max_queue_size
-        
-        # Voice Activity Detection settings
+          # Voice Activity Detection settings
         self.use_vad = USE_VAD  # Get from config
         self.vad_min_freq = 250  # Minimum frequency for VAD in Hz
         self.vad_max_freq = 750  # Maximum frequency for VAD in Hz
-        self.vad_threshold = 500  # Threshold for detecting activity (adjustable)
+        # No threshold needed as we only check for frequency components
         self.total_chunks = 0
         self.vad_active_chunks = 0
         
@@ -170,65 +169,59 @@ class AudioRecorder:
                             else:
                                 self.audio_buffer[0] = self.audio_buffer[0][samples_to_remove:]
                                 samples_to_remove = 0
-                        
                         frames_accumulated = sum(len(chunk) for chunk in self.audio_buffer)
                         
             time.sleep(0.1)
-    
+            
     def detect_voice_activity(self, audio_data):
         """
-        Detect if there is voice activity in the specified frequency range.
+        Detect if there is audio content in the specified frequency range (250-750 Hz).
         
-        Uses FFT to analyze the frequency spectrum and determine if there are
-        significant components in the 250-750 Hz range.
+        Uses FFT to analyze the frequency spectrum and check for any components
+        in the 250-750 Hz range, without considering energy thresholds.
         
         Args:
             audio_data (numpy.ndarray): Audio data to analyze
             
         Returns:
-            bool: True if voice activity is detected, False otherwise
+            bool: True if any frequency components exist in the target range, False otherwise
         """
         if not self.use_vad:
             return True  # Skip VAD if disabled
             
-        try:
-            # Apply a window function to reduce spectral leakage
+        try:            # Apply a window function to reduce spectral leakage
             windowed_data = audio_data * np.hamming(len(audio_data))
             
-            # Calculate FFT and power spectrum
+            # Calculate FFT
             fft_data = np.abs(np.fft.rfft(windowed_data))
-            power_spectrum = fft_data ** 2
             
             # Calculate frequency bins
             freqs = np.fft.rfftfreq(len(windowed_data), 1/self.sample_rate)
             
-            # Filter for frequencies in the specified range
+            # Filter for frequencies in the specified range (250-750 Hz)
             freq_mask = (freqs >= self.vad_min_freq) & (freqs <= self.vad_max_freq)
-            filtered_spectrum = power_spectrum[freq_mask]
             
-            # Check if there's significant energy in the filtered spectrum
-            if len(filtered_spectrum) > 0:
-                peak_power = np.max(filtered_spectrum)
-                average_power = np.mean(filtered_spectrum)
-                
-                # Log the detected power for debugging
-                logger.debug(f"VAD: Peak power in {self.vad_min_freq}-{self.vad_max_freq}Hz: {peak_power:.2f}, Average: {average_power:.2f}")
-                
-                # Determine if there's activity based on power threshold
-                has_activity = peak_power > self.vad_threshold
-                
-                # Update statistics
-                self.total_chunks += 1
-                if has_activity:
-                    self.vad_active_chunks += 1
-                
-                if self.total_chunks % 10 == 0:
-                    active_percentage = (self.vad_active_chunks / self.total_chunks) * 100 if self.total_chunks > 0 else 0
-                    logger.info(f"VAD stats: Active {self.vad_active_chunks}/{self.total_chunks} chunks ({active_percentage:.1f}%)")
-                
-                return has_activity
+            # Get the frequency content in the target range
+            target_range_content = fft_data[freq_mask]
+            
+            # Check if there is any content in the target frequency range
+            # We just check if any content exists, not its energy level
+            has_content = len(target_range_content) > 0 and np.any(target_range_content > 0)
+            
+            # Update statistics
+            self.total_chunks += 1
+            if has_content:
+                self.vad_active_chunks += 1
+                logger.debug(f"VAD: Content detected in {self.vad_min_freq}-{self.vad_max_freq}Hz range")
             else:
-                return False
+                logger.debug(f"VAD: No content in {self.vad_min_freq}-{self.vad_max_freq}Hz range")
+            
+            # Log statistics periodically
+            if self.total_chunks % 10 == 0:
+                active_percentage = (self.vad_active_chunks / self.total_chunks) * 100 if self.total_chunks > 0 else 0
+                logger.info(f"VAD stats: Active {self.vad_active_chunks}/{self.total_chunks} chunks ({active_percentage:.1f}%)")
+            
+            return has_content
                 
         except Exception as e:
             logger.error(f"Error in VAD processing: {e}")
@@ -244,15 +237,14 @@ class AudioRecorder:
         Args:
             window_data (numpy.ndarray): Audio data for the current window (3 seconds)
         """
-        try:
-            # Apply Voice Activity Detection if enabled
+        try:            # Apply Voice Activity Detection if enabled
             if self.use_vad:
                 has_voice = self.detect_voice_activity(window_data)
                 if not has_voice:
-                    logger.debug(f"VAD: No voice activity detected in frequency range {self.vad_min_freq}-{self.vad_max_freq}Hz, skipping audio chunk")
+                    logger.debug(f"VAD: No content detected in frequency range {self.vad_min_freq}-{self.vad_max_freq}Hz, skipping audio chunk")
                     return
                 else:
-                    logger.debug(f"VAD: Voice activity detected in frequency range {self.vad_min_freq}-{self.vad_max_freq}Hz")
+                    logger.debug(f"VAD: Content detected in frequency range {self.vad_min_freq}-{self.vad_max_freq}Hz")
             
             # Kiểm tra nếu hàng đợi đã đầy, xóa mục cũ nhất
             if self.chunk_queue.full():
