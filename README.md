@@ -24,12 +24,81 @@ Baby-Care-IoT/
 └── websocket_client.py # Module kết nối WebSocket
 ```
 
+## Thư viện sử dụng
+
+Dự án sử dụng các thư viện Python sau:
+
+### Xử lý âm thanh
+- **NumPy (1.19.5)**: Thư viện tính toán số học, được sử dụng để xử lý mảng dữ liệu âm thanh
+- **SciPy (1.5.4)**: Thư viện khoa học với các thuật toán xử lý tín hiệu, được sử dụng cho phân tích và lọc tín hiệu âm thanh
+- **PyAudio (0.2.11)**: Thư viện cung cấp Python binding cho PortAudio, cho phép ghi và phát âm thanh
+
+### Xử lý hình ảnh
+- **Pillow (8.1.0)**: Fork mạnh mẽ của thư viện PIL (Python Imaging Library), dùng để xử lý, nén và lưu trữ hình ảnh
+- **picamera (1.13.0)**: Thư viện Python để điều khiển camera module của Raspberry Pi
+
+### Kết nối mạng
+- **requests (2.25.1)**: Thư viện HTTP đơn giản và hiệu quả
+- **websocket-client (1.2.3)**: Client WebSocket cho Python, xử lý kết nối hai chiều với server
+
+### Tiện ích
+- **netifaces (0.10.9)**: Thư viện cung cấp thông tin về giao diện mạng
+- **python-dotenv (0.15.0)**: Thư viện đọc các biến môi trường từ file .env
+
+## Nguyên lý hoạt động
+
+### Kiến trúc tổng thể
+
+Hệ thống Baby-Care-IoT hoạt động theo mô hình client-server:
+
+1. **Client** (Raspberry Pi):
+   - Thu thập dữ liệu âm thanh và hình ảnh từ các cảm biến
+   - Xử lý sơ bộ dữ liệu
+   - Truyền dữ liệu đến server qua WebSocket
+
+2. **Server** (Máy chủ trong nhà hoặc đám mây):
+   - Tiếp nhận dữ liệu từ client
+   - Xử lý và phân tích dữ liệu
+   - Gửi thông báo khi phát hiện sự kiện
+   - Cung cấp giao diện web cho người dùng
+
+### Quy trình xử lý
+
+#### Xử lý hình ảnh
+1. **Thu thập hình ảnh**: Camera chụp ảnh theo chu kỳ định kỳ (mặc định là 1 giây)
+2. **Xử lý hình ảnh**: Nén hình ảnh thành định dạng JPEG, điều chỉnh kích thước nếu cần
+3. **Mã hóa và truyền**: Mã hóa hình ảnh thành base64 và gửi đến server qua WebSocket
+4. **Phân tích trên server**: Server có thể phân tích hình ảnh để phát hiện chuyển động hoặc các sự kiện khác
+
+#### Xử lý âm thanh
+1. **Thu âm thanh**: Microphone thu âm thanh liên tục với cơ chế sliding window (mặc định cửa sổ 3 giây, trượt 1 giây)
+2. **Voice Activity Detection (VAD)**: Phân tích tín hiệu âm thanh để phát hiện hoạt động giọng nói hoặc âm thanh khác thường
+3. **Xử lý và nén**: Dữ liệu âm thanh được xử lý, chuyển đổi thành định dạng phù hợp và nén
+4. **Truyền dữ liệu**: Gửi dữ liệu âm thanh đã xử lý đến server qua WebSocket
+5. **Phân tích trên server**: Server phân tích âm thanh để phát hiện tiếng khóc hoặc âm thanh bất thường
+
+### Cơ chế Voice Activity Detection (VAD)
+
+Hệ thống sử dụng phương pháp đơn giản để phát hiện hoạt động âm thanh:
+1. Tính toán mức năng lượng tín hiệu âm thanh
+2. So sánh với ngưỡng cài đặt sẵn
+3. Khi năng lượng vượt quá ngưỡng, hệ thống xác định có hoạt động âm thanh
+4. Dữ liệu chỉ được gửi đến server khi có hoạt động âm thanh, giúp tiết kiệm băng thông
+
+### Cơ chế kết nối WebSocket
+
+WebSocket cho phép kết nối hai chiều giữa client và server:
+1. Client thiết lập kết nối với server
+2. Kết nối được duy trì liên tục (khác với HTTP thông thường)
+3. Hệ thống sử dụng cơ chế tự động kết nối lại với chiến lược "exponential backoff" khi mất kết nối
+4. Server có thể gửi lệnh điều khiển về client (ví dụ: điều chỉnh tham số, bật/tắt tính năng)
+
 ## Yêu cầu hệ thống
 
-- Raspberry Pi (khuyến nghị Pi 3B+ hoặc cao hơn)
-- Camera (Pi Camera hoặc USB Camera)
+- Raspberry Pi 2B Model B
+- USB Camera
 - Microphone
-- Python 3.7 hoặc cao hơn
+- Python 3.7
 - Kết nối internet
 
 ## Cài đặt
@@ -99,4 +168,6 @@ Các log file được lưu trong thư mục `logs/`:
 - `error.log`: Log các lỗi
 
 Để xem thông tin debug chi tiết, chạy ứng dụng với tham số `--debug`.
+
+
 
