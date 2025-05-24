@@ -1,716 +1,364 @@
-# File: camera_client.py
-# Module for capturing and sending images to server
+# File: audio_client.py
+# Module for recording and sending audio to server
 
-import os
+import pyaudio
+import numpy as np
+import wave
 import time
-import datetime
 import threading
-import subprocess
-import re
+import queue
 import base64
 import json
-import queue  # Thêm import queue ở đây
 from io import BytesIO
 from config import (
-    PHOTO_DIR, TEMP_DIR, DEVICE_ID, IMAGE_WS_ENDPOINT, 
-    PHOTO_INTERVAL, get_ws_url  # Import get_ws_url function
+    AUDIO_WS_ENDPOINT, SAMPLE_RATE, CHANNELS, 
+    AUDIO_DURATION, AUDIO_SLIDE_SIZE, DEVICE_ID,
+    USE_VAD,  # Import VAD setting
+    get_ws_url
 )
-from utils import get_timestamp, logger
+from utils import logger
 from websocket_client import WebSocketClient
+from scipy import signal
 
-# Flag for PiCamera or USB camera availability
-PICAMERA_AVAILABLE = False
-
-try:
-    from PIL import Image
-    logger.info("PIL library detected")
-except ImportError:
-    logger.warning("WARNING: PIL library not found. Image processing capabilities will be limited.")
-
-try:
-    from picamera import PiCamera
-    PICAMERA_AVAILABLE = True
-    logger.info("PiCamera detected.")
-except ImportError:
-    logger.warning("PiCamera not found. Will use USB camera if available.")
-
-
-class CameraClient:
+class AudioRecorder:
     """
-    Client for capturing and sending images to the server
+    Records audio using a sliding window approach.
+    
+    This class records audio continuously and processes it in overlapping windows.
+    With default settings, it creates 3-second audio chunks that slide by 1 second,
+    meaning there is a 2-second overlap between consecutive chunks.
     """
-    def __init__(self, interval=1, max_queue_size=5):
+    def __init__(self, chunk_size=1024, sample_rate=SAMPLE_RATE, channels=CHANNELS, 
+                 window_size=AUDIO_DURATION, slide_size=AUDIO_SLIDE_SIZE, format=pyaudio.paInt16,
+                 max_queue_size=10):
         """
-        Initialize camera client
+        Initialize the AudioRecorder with the specified parameters.
         
         Args:
-            interval (int): Time interval between image captures (seconds)
-            max_queue_size (int): Maximum number of images in the queue (default 5)
+            chunk_size (int): Number of audio frames per buffer
+            sample_rate (int): Audio sampling rate in Hz (default 16000)
+            channels (int): Number of audio channels (1=mono, 2=stereo)
+            window_size (int): Size of each audio segment in seconds (default 3)
+            slide_size (int): How much the window slides each time in seconds (default 1)
+            format: PyAudio format constant
+            max_queue_size (int): Maximum number of audio chunks in the queue (default 10)
         """
-        self.interval = interval
-        self.running = False
-        self.photo_thread = None
+        self.chunk_size = chunk_size
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.format = format
+        self.window_size = window_size
+        self.slide_size = slide_size
         self.max_queue_size = max_queue_size
-        self.image_queue = queue.Queue(maxsize=max_queue_size)
-        self.dropped_images_count = 0
-        self.sending_in_progress = False
-        self.queue_size_counter = 0  # Biến đếm số ảnh hiện tại trong queue
+          # Voice Activity Detection settings
+        self.use_vad = USE_VAD  # Get from config
+        self.vad_min_freq = 250  # Minimum frequency for VAD in Hz
+        self.vad_max_freq = 750  # Maximum frequency for VAD in Hz
+        # No threshold needed as we only check for frequency components
+        self.total_chunks = 0
+        self.vad_active_chunks = 0
         
-        # Image statistics
-        self.sent_success_count = 0
-        self.sent_fail_count = 0
-        self.total_photos_taken = 0
-        
-        # Processing status tracking
-        self.current_photo_file = "None"
-        self.processing_status = "Waiting"
-        self.next_photo_time = time.time() + interval
-        
-        # Timing metrics
-        self.last_capture_time = time.time()
-        self.last_sent_time = 0
-        self.capture_duration = 0
-        self.sending_duration = 0
-        
-        # Store WebSocket URL and client
+        # Store the WebSocket URL but don't create the client yet
+        # We'll create it when start_recording is called to use the most up-to-date URL
         self.ws_url = None
         self.ws_client = None
         
-        # Create required directories
-        os.makedirs(PHOTO_DIR, exist_ok=True)
-        os.makedirs(TEMP_DIR, exist_ok=True)
+        self.audio = pyaudio.PyAudio()
+        self.stream = None
+        self.is_recording = False
+        self.audio_buffer = []
+        self.buffer_lock = threading.Lock()
+        self.frames_per_window = int(sample_rate * window_size)
+        self.frames_per_slide = int(sample_rate * slide_size)
+        self.chunk_queue = queue.Queue(maxsize=max_queue_size)
+        self.save_counter = 0
+        self.processing_thread = None
+        self.dropped_chunks_count = 0
+        self.last_ws_status = "Not connected"
+
+    def start_recording(self):
+        """
+        Start recording audio and establish WebSocket connection.
         
-    def start(self):
+        This method:
+        1. Connects to the WebSocket server
+        2. Initializes the audio buffer
+        3. Sets up the PyAudio stream with callback
+        4. Starts the audio processing thread
         """
-        Start camera client
-        """
-        self.running = True
+        if self.is_recording:
+            return
         
         # Get the most up-to-date WebSocket URL
+        # This ensures we use any command-line configuration changes
         # Use path parameter format for device_id as requested
-        base_ws_url = get_ws_url('image')
+        base_ws_url = get_ws_url('audio')
         self.ws_url = f"{base_ws_url}/{DEVICE_ID}"
-        logger.info(f"Connecting to image WebSocket at {self.ws_url}")
+        logger.info(f"Connecting to audio WebSocket at {self.ws_url}")
         
         # Create WebSocket client with the updated URL
         self.ws_client = WebSocketClient(
             ws_url=self.ws_url,
             device_id=DEVICE_ID,
-            client_type="camera"
+            client_type="audio"
         )
-        
-        # Start WebSocket connection
+            
+        # Connect to WebSocket first
         self.ws_client.connect()
         
-        # Start photo capture thread
-        self.photo_thread = threading.Thread(target=self._photo_thread)
-        self.photo_thread.daemon = True
-        self.photo_thread.start()
-            
-        logger.info("Camera client started")
-        return True
+        self.is_recording = True
+        self.audio_buffer = []
         
-    def stop(self):
-        """
-        Stop camera client
-        """
-        self.running = False
+        def callback(in_data, frame_count, time_info, status):
+            self.audio_buffer.append(np.frombuffer(in_data, dtype=np.int16))
+            return (in_data, pyaudio.paContinue)
+            
+        self.stream = self.audio.open(
+            format=self.format,
+            channels=self.channels,
+            rate=self.sample_rate,
+            input=True,
+            frames_per_buffer=self.chunk_size,
+            stream_callback=callback
+        )
         
-        # Close WebSocket connection
-        self.ws_client.close()
-            
-        # Wait for processing thread to finish
-        if self.photo_thread and self.photo_thread.is_alive():
-            self.photo_thread.join(timeout=1.0)
-            
-        logger.info("Camera client stopped")
-    
-    def _photo_thread(self):
+        self.processing_thread = threading.Thread(target=self._process_audio)
+        self.processing_thread.daemon = True
+        self.processing_thread.start()
+        logger.info("Started audio recording with sliding window")
+        
+    def _process_audio(self):
         """
-        Thread for periodically capturing images and sending to server
+        Process audio in sliding windows.
+        
+        This method continuously monitors the audio buffer. Once enough data 
+        is collected for a window (e.g., 3 seconds), it processes that window
+        and then slides forward by slide_size (e.g., 1 second) to prepare for
+        the next window.
+        
+        This runs in a separate thread to avoid blocking the main thread.
         """
-        while self.running:
-            try:
-                # Capture and send image
-                self.capture_and_send_photo()
-                
-                # Wait for next capture time
-                time.sleep(self.interval)
-            except Exception as e:
-                logger.error(f"Error in photo capture thread: {e}")
-                time.sleep(self.interval)
-    
-    def detect_video_devices(self):
-        """Detect and return USB camera devices"""
-        try:
-            # Use v4l2-ctl to list video devices
-            proc = subprocess.run(['v4l2-ctl', '--list-devices'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            devices_output = proc.stdout.decode()
-            
-            if not devices_output.strip():
-                # Try alternative method to list video devices
-                proc = subprocess.run(['ls', '-la', '/dev/video*'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                devices_output = proc.stdout.decode()
-                
-                if 'No such file or directory' in devices_output:
-                    return []
+        frames_accumulated = 0
+        samples_per_chunk = self.chunk_size
+        buffer_ready = False
+        
+        while self.is_recording:
+            if len(self.audio_buffer) > 0:
+                with self.buffer_lock:
+                    total_samples_in_buffer = sum(len(chunk) for chunk in self.audio_buffer)
+                    frames_accumulated = total_samples_in_buffer
                     
-                # Parse output to find video devices
-                video_devices = []
-                for line in devices_output.splitlines():
-                    match = re.search(r'/dev/video(\d+)', line)
-                    if match:
-                        video_devices.append({
-                            'device': match.group(0),
-                            'index': match.group(1),
-                            'name': f"Video Device {match.group(1)}"
-                        })
-                return video_devices
-            
-            # Parse v4l2-ctl output
-            devices = []
-            current_device = None
-            for line in devices_output.splitlines():
-                if ':' in line and '/dev/video' not in line:
-                    # This is a device name
-                    current_device = line.strip().rstrip(':')
-                elif '/dev/video' in line:
-                    # This is a device path
-                    match = re.search(r'/dev/video(\d+)', line)
-                    if match and current_device:
-                        devices.append({
-                            'device': match.group(0),
-                            'index': match.group(1),
-                            'name': current_device
-                        })
-            return devices
-        except Exception as e:
-            logger.error(f"Error detecting camera devices: {e}")
-            return []
-    
-    def get_best_video_device(self):
-        """Choose the most suitable camera device"""
-        devices = self.detect_video_devices()
-        
-        if not devices:
-            return None
-        
-        # Luôn ưu tiên thiết bị /dev/video0 nếu có (thiết bị vật lý)
-        for device in devices:
-            if device['device'] == '/dev/video0':
-                logger.info("Found physical camera device: /dev/video0")
-                return device
-            
-        # Lọc bỏ các thiết bị ảo v4l2loopback
-        physical_devices = []
-        for device in devices:
-            # Kiểm tra xem đây có phải là thiết bị ảo không
-            try:
-                # Sử dụng v4l2-ctl để kiểm tra thông tin thiết bị
-                proc = subprocess.run(
-                    ['v4l2-ctl', '--device', device['device'], '--info'], 
-                    stdout=subprocess.PIPE, 
-                    stderr=subprocess.PIPE
-                )
-                device_info = proc.stdout.decode().lower()
-                
-                # Nếu thiết bị có chứa từ khóa loopback hoặc virtual, bỏ qua
-                if 'loopback' in device_info or 'virtual' in device_info:
-                    logger.info(f"Skipping virtual device: {device['device']}")
-                    continue
-                
-                # Thêm vào danh sách thiết bị vật lý
-                physical_devices.append(device)
-                
-            except Exception:
-                # Nếu không thể kiểm tra, vẫn thêm vào danh sách để xử lý sau
-                physical_devices.append(device)
-        
-        # Nếu có thiết bị vật lý, ưu tiên thiết bị có index thấp nhất (thường là thiết bị cắm đầu tiên)
-        if physical_devices:
-            physical_devices.sort(key=lambda d: int(d['index']))
-            logger.info(f"Using physical camera device: {physical_devices[0]['device']}")
-            return physical_devices[0]
-            
-        # Nếu không tìm thấy thiết bị vật lý, quay lại cách cũ
-        # Prefer USB cameras with camera, webcam, usb in name
-        for device in devices:
-            if 'camera' in device.get('name', '').lower() or 'webcam' in device.get('name', '').lower() or 'usb' in device.get('name', '').lower():
-                return device
-        
-        # If none found, use first device
-        if len(devices) > 0:
-            return devices[0]
-            
-        return None
-
-    def _capture_with_fswebcam(self, output_path):
-        """Capture image with fswebcam (for USB cameras)"""
-        try:
-            # Find camera device
-            device = self.get_best_video_device()
-            if not device:
-                logger.error("No USB camera device found")
-                return None
+                    if not buffer_ready and frames_accumulated >= self.frames_per_window:
+                        buffer_ready = True
                     
-            # Use fswebcam to capture image
-            device_path = device['device']
-            logger.info(f"Starting image capture from device {device_path}...")
+                    if buffer_ready and frames_accumulated >= self.frames_per_window:
+                        flat_buffer = np.concatenate(self.audio_buffer)
+                        window_data = flat_buffer[-self.frames_per_window:]
+                        
+                        if len(window_data) == self.frames_per_window:
+                            self.process_window(window_data)
+                        else:
+                            logger.warning("Not enough data for a full window. Waiting for more data...")
+                            continue
+                        
+                        samples_to_remove = self.frames_per_slide
+                        while samples_to_remove > 0 and len(self.audio_buffer) > 0:
+                            if len(self.audio_buffer[0]) <= samples_to_remove:
+                                samples_to_remove -= len(self.audio_buffer[0])
+                                self.audio_buffer.pop(0)
+                            else:
+                                self.audio_buffer[0] = self.audio_buffer[0][samples_to_remove:]
+                                samples_to_remove = 0
+                        frames_accumulated = sum(len(chunk) for chunk in self.audio_buffer)
+                        
+            time.sleep(0.1)
             
-            # Ensure temp directory exists
-            os.makedirs(TEMP_DIR, exist_ok=True)
-            
-            # Temporary file path
-            temp_path = os.path.join(TEMP_DIR, "temp_capture.jpg")
-            
-            # Capture image with fswebcam at lower resolution
-            subprocess.run([
-                'fswebcam',
-                '-q',                   # Quiet mode (no banner)
-                '-r', '640x480',        # Lower resolution
-                '--no-banner',          # No banner display
-                '-d', device_path,      # Camera device
-                '--jpeg', '70',         # Reduce JPEG quality to speed up
-                '-F', '2',              # Reduce frames to skip (speed up)
-                temp_path               # Output file path
-            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=5)
-            
-            # Check if file was created successfully
-            if not os.path.exists(temp_path):
-                logger.error("Error capturing image - file not created")
-                return None
-                
-            if os.path.getsize(temp_path) < 1000:  # Check minimum file size
-                logger.error("Error capturing image - file too small, may be corrupted")
-                os.remove(temp_path)
-                return None
-                
-            # Move file from temp to destination directory
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            import shutil
-            shutil.copy(temp_path, output_path)
-            os.remove(temp_path)
-            
-            logger.info(f"Image captured: {output_path}")
-            return output_path
-                    
-        except Exception as e:
-            logger.error(f"Error capturing image with fswebcam: {e}")
-            # Clean up temp file if there was an error
-            if 'temp_path' in locals() and os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except:
-                    pass
-            return None
-
-    def _capture_with_libcamera(self, output_path):
-        """Capture image with libcamera-still (for Pi Camera)"""
-        try:
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            
-            # Use libcamera-still with lower resolution
-            subprocess.run([
-                'libcamera-still',
-                '-t', '500',            # Reduce wait time to 0.5 seconds
-                '-n',                   # No preview
-                '--width', '640',       # Reduce width
-                '--height', '480',      # Reduce height
-                '-o', output_path       # Output file path
-            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=3)
-            
-            # Check if file was created successfully
-            if not os.path.exists(output_path):
-                logger.error("Error capturing image with libcamera - file not created")
-                return None
-                
-            if os.path.getsize(output_path) < 1000:  # Check minimum file size
-                logger.error("Error capturing image with libcamera - file too small, may be corrupted")
-                os.remove(output_path)
-                return None
-                
-            logger.info(f"Image captured with libcamera: {output_path}")
-            return output_path
-                    
-        except FileNotFoundError:
-            logger.warning("libcamera-still not found on system")
-            return None
-        except Exception as e:
-            logger.error(f"Error capturing image with libcamera: {e}")
-            return None
-
-    def _capture_with_picamera(self, output_path):
-        """Capture image with PiCamera module"""
-        if not PICAMERA_AVAILABLE:
-            logger.warning("PiCamera library not found")
-            return None
-            
-        try:
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            
-            camera = PiCamera()
-            camera.resolution = (640, 480)  # Lower resolution
-            
-            # Initialize camera and wait for light balance (reduce wait time)
-            camera.start_preview()
-            time.sleep(0.5)  # Reduce wait time to 0.5 seconds
-            
-            # Capture image
-            camera.capture(output_path)
-            camera.stop_preview()
-            camera.close()
-            
-            logger.info(f"Image captured with PiCamera: {output_path}")
-            return output_path
-        
-        except Exception as e:
-            logger.error(f"Error capturing image with PiCamera: {e}")
-            return None
-
-    def _capture_with_ffmpeg(self, output_path):
-        """Capture image with ffmpeg (fallback method)"""
-        try:
-            # Find camera device
-            device = self.get_best_video_device()
-            if not device:
-                return None
-                
-            device_path = device['device']
-            
-            subprocess.run([
-                'ffmpeg',
-                '-f', 'video4linux2',
-                '-i', device_path,
-                '-frames:v', '1',       # Capture one frame
-                '-s', '640x480',        # Lower resolution
-                '-y',                   # Overwrite output file
-                output_path
-            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=3)
-            
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-                logger.info(f"Image captured with ffmpeg: {output_path}")
-                return output_path
-            return None
-        except Exception as e:
-            logger.error(f"Error capturing image with ffmpeg: {e}")
-            return None
-
-    def _capture_with_v4l2_grab(self, output_path):
-        """Capture image with v4l2-grab (fallback method)"""
-        try:
-            device = self.get_best_video_device()
-            if not device:
-                return None
-                
-            device_path = device['device']
-            
-            subprocess.run([
-                'v4l2-grab',
-                '-d', device_path,
-                '-o', output_path
-            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=3)
-            
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-                logger.info(f"Image captured with v4l2-grab: {output_path}")
-                return output_path
-            return None
-        except Exception as e:
-            logger.error(f"Error capturing image with v4l2-grab: {e}")
-            return None
-
-    def _capture_with_uvccapture(self, output_path):
-        """Capture image with uvccapture (fallback method)"""
-        try:
-            device = self.get_best_video_device()
-            if not device:
-                return None
-                
-            device_path = device['device']
-            
-            subprocess.run([
-                'uvccapture',
-                '-d', device_path,
-                '-o', output_path
-            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=3)
-            
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-                logger.info(f"Image captured with uvccapture: {output_path}")
-                return output_path
-            return None
-        except Exception as e:
-            logger.error(f"Error capturing image with uvccapture: {e}")
-            return None
-
-    def capture_photo(self):
+    def detect_voice_activity(self, audio_data):
         """
-        Capture image from camera and save to specified directory
-        Try different methods to ensure success
+        Detect if there is audio content in the specified frequency range (250-750 Hz).
         
-        Returns:
-            str: Path to captured image, or None if failed
-        """
-        # Create directory if it doesn't exist
-        os.makedirs(PHOTO_DIR, exist_ok=True)
-        
-        # Create filename with timestamp
-        string_timestamp, _ = get_timestamp()
-        filename = f"photo_{string_timestamp}.jpg"
-        filepath = os.path.join(PHOTO_DIR, filename)
-        
-        # Try different capture methods in order of preference
-        
-        # Try USB camera first (fswebcam)
-        logger.info("Trying to capture image with fswebcam (USB camera)...")
-        result = self._capture_with_fswebcam(filepath)
-        if result:
-            return result
-        
-        # If PiCamera available, try PiCamera module
-        if PICAMERA_AVAILABLE:
-            logger.info("Trying to capture image with PiCamera module...")
-            result = self._capture_with_picamera(filepath)
-            if result:
-                return result
-        
-        # Try using libcamera-still (for newer Raspberry Pi OS)
-        logger.info("Trying to capture image with libcamera-still...")
-        result = self._capture_with_libcamera(filepath)
-        if result:
-            return result
-        
-        # Try fallback methods if primary methods fail
-        logger.info("Primary methods failed, trying fallback methods...")
-        
-        # Try ffmpeg
-        result = self._capture_with_ffmpeg(filepath)
-        if result:
-            return result
-        
-        # Try v4l2-grab
-        result = self._capture_with_v4l2_grab(filepath)
-        if result:
-            return result
-        
-        # Try uvccapture
-        result = self._capture_with_uvccapture(filepath)
-        if result:
-            return result
-        
-        logger.error("Cannot capture image: All methods failed")
-        return None
-
-    def get_image_as_base64(self, image_path):
-        """
-        Convert image to base64 string
+        Uses FFT to analyze the frequency spectrum and check for any components
+        in the 250-750 Hz range, without considering energy thresholds.
         
         Args:
-            image_path (str): Path to image file
+            audio_data (numpy.ndarray): Audio data to analyze
             
         Returns:
-            str: Base64 encoded image data
+            bool: True if any frequency components exist in the target range, False otherwise
         """
-        try:
-            # Read file directly instead of through PIL to speed up
-            with open(image_path, "rb") as image_file:
-                return base64.b64encode(image_file.read()).decode('utf-8')
+        if not self.use_vad:
+            return True  # Skip VAD if disabled
+            
+        try:            # Apply a window function to reduce spectral leakage
+            windowed_data = audio_data * np.hamming(len(audio_data))
+            
+            # Calculate FFT
+            fft_data = np.abs(np.fft.rfft(windowed_data))
+            
+            # Calculate frequency bins
+            freqs = np.fft.rfftfreq(len(windowed_data), 1/self.sample_rate)
+            
+            # Filter for frequencies in the specified range (250-750 Hz)
+            freq_mask = (freqs >= self.vad_min_freq) & (freqs <= self.vad_max_freq)
+            
+            # Get the frequency content in the target range
+            target_range_content = fft_data[freq_mask]
+            
+            # Check if there is any content in the target frequency range
+            # We just check if any content exists, not its energy level
+            has_content = len(target_range_content) > 0 and np.any(target_range_content > 0)
+            
+            # Update statistics
+            self.total_chunks += 1
+            if has_content:
+                self.vad_active_chunks += 1
+                logger.debug(f"VAD: Content detected in {self.vad_min_freq}-{self.vad_max_freq}Hz range")
+            else:
+                logger.debug(f"VAD: No content in {self.vad_min_freq}-{self.vad_max_freq}Hz range")
+            
+            # Log statistics periodically
+            if self.total_chunks % 10 == 0:
+                active_percentage = (self.vad_active_chunks / self.total_chunks) * 100 if self.total_chunks > 0 else 0
+                logger.info(f"VAD stats: Active {self.vad_active_chunks}/{self.total_chunks} chunks ({active_percentage:.1f}%)")
+            
+            return has_content
+                
         except Exception as e:
-            logger.error(f"Error reading image file: {e}")
-            return None
+            logger.error(f"Error in VAD processing: {e}")
+            return True  # Default to sending audio if VAD fails
     
-    def send_image_via_websocket(self, image_path, timestamp):
+    def process_window(self, window_data):
         """
-        Send image via WebSocket with format required by server
+        Process a single window of audio data.
+        
+        Takes a window of audio data and sends it through WebSocket if connected.
+        Each window is sent in a separate thread to avoid blocking.
         
         Args:
-            image_path (str): Path to image file
-            timestamp (float): Time when image was captured
-            
-        Returns:
-            bool: True if sent successfully, False otherwise
+            window_data (numpy.ndarray): Audio data for the current window (3 seconds)
         """
-        if not self.ws_client.ws_connected:
-            logger.warning("No WebSocket connection, cannot send image")
-            return False
-        
-        try:
-            # Convert image to base64
-            image_base64 = self.get_image_as_base64(image_path)
-            if not image_base64:
-                return False
-                
-            # Create ISO 8601 timestamp format for server compatibility
-            timestamp_str = datetime.datetime.fromtimestamp(timestamp).isoformat()
-                
-            # Create message in server-required format
-            message = {
-                'image_base64': image_base64,
-                'timestamp': timestamp_str
-            }
+        try:            # Apply Voice Activity Detection if enabled
+            if self.use_vad:
+                has_voice = self.detect_voice_activity(window_data)
+                if not has_voice:
+                    logger.debug(f"VAD: No content detected in frequency range {self.vad_min_freq}-{self.vad_max_freq}Hz, skipping audio chunk")
+                    return
+                else:
+                    logger.debug(f"VAD: Content detected in frequency range {self.vad_min_freq}-{self.vad_max_freq}Hz")
             
-            # Send via WebSocket
-            result = self.ws_client.send_message(message)
-            if result:
-                logger.info(f"Image sent via WebSocket at {timestamp_str}")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error sending image via WebSocket: {e}")
-            return False
-    
-    def capture_and_send_photo(self):
-        """
-        Capture image and send to server
-        
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        # Update status and start timing
-        self.processing_status = "Capturing image..."
-        capture_start_time = time.time()
-        
-        # Calculate time since last capture
-        capture_interval = capture_start_time - self.last_capture_time
-        self.last_capture_time = capture_start_time
-        
-        # Capture image
-        image_path = self.capture_photo()
-        
-        # Measure image capture time
-        self.capture_duration = time.time() - capture_start_time
-        
-        if not image_path:
-            logger.error("Cannot capture image to send to server")
-            self.sent_fail_count += 1
-            self.processing_status = "Image capture error"
-            self.current_photo_file = "None"
-            return False
-            
-        # Save current filename
-        self.current_photo_file = os.path.basename(image_path)
-        
-        # Increment photo count
-        self.total_photos_taken += 1
-        
-        # Tạo timestamp
-        timestamp = time.time()
-        
-        try:
-            # Kiểm tra nếu hàng đợi đã đầy, xóa ảnh cũ nhất để có chỗ cho ảnh mới
-            if self.queue_size_counter >= self.max_queue_size:
+            # Kiểm tra nếu hàng đợi đã đầy, xóa mục cũ nhất
+            if self.chunk_queue.full():
                 try:
-                    # Lấy và loại bỏ ảnh cũ nhất
-                    oldest_image_path, _ = self.image_queue.get(block=False)
-                    self.queue_size_counter -= 1
-                    self.image_queue.task_done()
-                    logger.warning(f"Image queue full: Removed oldest image to make room for new one: {os.path.basename(oldest_image_path)}")
+                    # Lấy và loại bỏ mục cũ nhất
+                    oldest_chunk = self.chunk_queue.get(block=False)
+                    self.chunk_queue.task_done()
+                    logger.warning("Queue full: Removed oldest audio chunk to make room for new one")
                 except queue.Empty:
                     # Trường hợp hiếm khi xảy ra - queue vừa đầy vừa trống
                     pass
-                
-            # Thêm ảnh mới vào hàng đợi
-            self.image_queue.put((image_path, timestamp), block=False)
-            self.queue_size_counter += 1
             
-            logger.info(f"Added image to queue. Current queue size: {self.queue_size_counter}/{self.max_queue_size}")
+            # Thêm mục mới vào hàng đợi
+            self.chunk_queue.put(window_data, block=False)
+            chunk_id = f"audio_chunk_{self.save_counter}"
             
-            # Chỉ bắt đầu thread gửi nếu không có thread gửi nào đang chạy
-            if not self.sending_in_progress:
-                send_thread = threading.Thread(target=self._send_queue_images)
-                send_thread.daemon = True
-                send_thread.start()
-                logger.info("Starting new send thread")
-            else:
-                logger.info("Send thread already running, not starting a new one")
+            # Send to WebSocket if connected
+            if self.ws_client.ws_connected:
+                ws_send_thread = threading.Thread(
+                    target=self.send_to_websocket,
+                    args=(window_data, chunk_id)
+                )
+                ws_send_thread.daemon = True
+                ws_send_thread.start()
             
-            self.processing_status = "Image queued for sending"
-            self.next_photo_time = time.time() + self.interval
-            return True
-            
+            self.save_counter += 1
         except queue.Full:
             # Xử lý trường hợp hiếm gặp khi không thể thêm vào queue dù đã xóa mục cũ
-            self.dropped_images_count += 1
-            logger.warning(f"Queue still full after removal: Dropping image: {self.current_photo_file}. Total dropped: {self.dropped_images_count}")
-            self.processing_status = "Queue still full, image dropped"
-            return False
+            self.dropped_chunks_count += 1
+            logger.warning(f"Queue still full after removal: Dropping audio chunk. Total dropped: {self.dropped_chunks_count}")
         except Exception as e:
-            logger.error(f"Error while handling image queue: {e}")
-            self.processing_status = f"Queue error: {e}"
-            return False
+            logger.error(f"Error processing audio window: {e}")
+    
+    def send_to_websocket(self, audio_data, chunk_id):
+        """
+        Send audio data through WebSocket connection.
+        
+        Converts audio data to WAV format, encodes it as base64, and sends it through
+        the WebSocket connection with appropriate metadata.
+        
+        Args:
+            audio_data (numpy.ndarray): Audio data to send (3 seconds)
+            chunk_id (str): Identifier for this audio chunk
+        """
+        if not self.ws_client.ws_connected:
+            return
 
-    def _send_queue_images(self):
-        """
-        Send images from queue via WebSocket
-        """
-        self.sending_in_progress = True
         try:
-            if not self.ws_client.ws_connected:
-                logger.warning("No WebSocket connection, cannot send image")
-                self.sending_in_progress = False
-                return
+            # Convert audio data to WAV format in memory
+            buffer = BytesIO()
+            wf = wave.open(buffer, 'wb')
+            wf.setnchannels(self.channels)
+            wf.setsampwidth(self.audio.get_sample_size(self.format))
+            wf.setframerate(self.sample_rate)
+            wf.writeframes(audio_data.tobytes())
+            wf.close()
             
-            # Đặt khoảng chờ giữa các lần gửi (ms)
-            send_delay = 0.5  # Đợi 500ms giữa các lần gửi ảnh
-                
-            while not self.image_queue.empty():
-                try:
-                    # Lấy ảnh từ hàng đợi với timeout
-                    image_path, timestamp = self.image_queue.get(timeout=0.5)
-                    
-                    # Update status and start send timing
-                    self.processing_status = f"Sending image: {os.path.basename(image_path)}..."
-                    send_start_time = time.time()
-                    
-                    # Ghi log kích thước hàng đợi trước khi gửi
-                    logger.info(f"Sending image from queue. Queue size before: {self.queue_size_counter}")
-                    
-                    # Send via WebSocket
-                    success = self.send_image_via_websocket(image_path, timestamp)
-                    
-                    # Giảm biến đếm khi đã lấy ảnh ra khỏi hàng đợi
-                    self.queue_size_counter -= 1
-                    
-                    # Ghi log kích thước hàng đợi sau khi gửi
-                    logger.info(f"Image sent. Queue size after: {self.queue_size_counter}")
-                    
-                    # Measure sending time
-                    self.sending_duration = time.time() - send_start_time
-                    self.last_sent_time = time.time()
-                    
-                    # Update counts based on success/failure
-                    if success:
-                        self.sent_success_count += 1
-                        self.processing_status = "Sent successfully"
-                    else:
-                        self.sent_fail_count += 1
-                        self.processing_status = "Send error"
-                    
-                    # Mark task as complete
-                    self.image_queue.task_done()
-                    
-                    # Dừng lại một chút giữa các lần gửi để giảm tải hệ thống
-                    time.sleep(send_delay)
-                    
-                except queue.Empty:
-                    break
-                except Exception as e:
-                    logger.error(f"Error sending image from queue: {e}")
-                    self.processing_status = f"Queue send error: {e}"
-                    # Vẫn phải giảm biến đếm nếu xảy ra lỗi
-                    self.queue_size_counter = max(0, self.queue_size_counter - 1)
-                    # Mark task as complete even if there was an error
-                    try:
-                        self.image_queue.task_done()
-                    except:
-                        pass
+            # Get the WAV data from the buffer
+            buffer.seek(0)
+            wav_data = buffer.read()
+            
+            # Encode the WAV data as base64
+            encoded_data = base64.b64encode(wav_data).decode('utf-8')
+            
+            # Prepare the payload
+            payload = {
+                'timestamp': time.time(),
+                'device_id': DEVICE_ID,
+                'audio_data': encoded_data
+            }
+            
+            # Send through WebSocket - directly send as JSON string
+            # Use direct websocket send instead of the send_message method
+            if self.ws_client and self.ws_client.ws:
+                self.ws_client.ws.send(json.dumps(payload))
+                self.last_ws_status = "Data sent"
+                logger.info(f"Audio sent via WebSocket: {chunk_id}")
+            
         except Exception as e:
-            logger.error(f"Error in image sending thread: {e}")
-        finally:
-            # Đảm bảo luôn reset cờ hiệu khi kết thúc
-            self.sending_in_progress = False
-            logger.info("Send thread finished")
-
+            logger.error(f"Error sending audio through WebSocket: {e}")
+            self.last_ws_status = f"Send error: {str(e)}"
+    
+    def stop_recording(self):
+        """
+        Stop recording and clean up resources.
+        
+        This method:
+        1. Stops the recording process
+        2. Closes the audio stream
+        3. Closes the WebSocket connection
+        4. Waits for processing threads to finish
+        """
+        self.is_recording = False
+        if self.stream:
+            self.stream.stop_stream()
+            self.stream.close()
+        
+        # Close WebSocket
+        self.ws_client.close()
+        
+        if self.processing_thread and self.processing_thread.is_alive():
+            self.processing_thread.join(timeout=1.0)
+        
+        logger.info("Audio recording stopped")
+        
+    def close(self):
+        """
+        Close all resources and terminate PyAudio.
+        
+        This should be called when the application exits to ensure proper cleanup.
+        """
+        self.stop_recording()
+        self.audio.terminate()
+        
     @property
     def ws_connected(self):
         """
@@ -724,20 +372,21 @@ class CameraClient:
 
 # Test module when run directly
 if __name__ == "__main__":
-    # Initialize client with 1 second interval
-    camera_client = CameraClient(interval=1)
-    
-    # Start client
-    camera_client.start()
+    # Initialize AudioRecorder
+    audio_recorder = AudioRecorder()
     
     try:
-        # Let WebSocket client run for a while
-        logger.info("Maintaining connection and capturing images for 60 seconds...")
+        # Start recording
+        audio_recorder.start_recording()
+        
+        # Record for 60 seconds
+        logger.info("Recording and sending audio for 60 seconds...")
         time.sleep(60)
         
     except KeyboardInterrupt:
         logger.info("Stop signal received")
     finally:
-        # Stop client
-        camera_client.stop()
+        # Stop recording and release resources
+        audio_recorder.stop_recording()
+        audio_recorder.close()
         logger.info("Test completed")
