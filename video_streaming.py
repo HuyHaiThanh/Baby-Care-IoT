@@ -172,12 +172,49 @@ class VirtualCameraManager:
     def cleanup_existing_devices(self):
         try:
             logger.info("Đang dọn dẹp các thiết bị video ảo hiện có...")
-            subprocess.run(["sudo", "modprobe", "-r", "v4l2loopback"], 
-                          capture_output=True, text=True)
-            time.sleep(2)
+            # Kill processes using any v4l2loopback devices
+            for i in range(30): # Check a reasonable range, e.g., /dev/video0 to /dev/video29
+                device_path = f"/dev/video{i}"
+                if os.path.exists(device_path):
+                    try:
+                        # Check if it's a v4l2loopback device
+                        device_info_process = subprocess.run(
+                            ["v4l2-ctl", "-d", device_path, "--info"],
+                            capture_output=True, text=True, timeout=2
+                        )
+                        if "v4l2loopback" in device_info_process.stdout or "loopback" in device_info_process.stdout:
+                            logger.info(f"Tìm thấy thiết bị v4l2loopback: {device_path}. Thử giải phóng...")
+                            # Kill processes using this device
+                            fuser_kill_cmd = ["sudo", "fuser", "-k", device_path]
+                            kill_proc = subprocess.run(fuser_kill_cmd, capture_output=True, text=True)
+                            if kill_proc.returncode == 0:
+                                logger.info(f"Đã giải phóng {device_path} bằng fuser.")
+                            elif kill_proc.stdout or kill_proc.stderr: # fuser might return 1 if no process was using it
+                                logger.info(f"fuser output for {device_path}: stdout='{kill_proc.stdout.strip()}', stderr='{kill_proc.stderr.strip()}'")
+                            time.sleep(0.5) # Brief pause after attempting to kill
+                    except subprocess.TimeoutExpired:
+                        logger.debug(f"Timeout khi kiểm tra {device_path} với v4l2-ctl.")
+                    except Exception as e:
+                        logger.debug(f"Lỗi khi kiểm tra hoặc giải phóng {device_path}: {str(e)}")
+            
+            # Unload the v4l2loopback module
+            unload_result = subprocess.run(["sudo", "modprobe", "-r", "v4l2loopback"],
+                                           capture_output=True, text=True)
+            if unload_result.returncode == 0:
+                logger.info("Đã gỡ bỏ module v4l2loopback thành công.")
+            else:
+                # Check if it was already unloaded or not loaded at all
+                check_loaded_cmd = ["lsmod"]
+                lsmod_output = subprocess.run(check_loaded_cmd, capture_output=True, text=True)
+                if "v4l2loopback" not in lsmod_output.stdout:
+                    logger.info("Module v4l2loopback không được nạp, không cần gỡ bỏ.")
+                else:
+                    logger.warning(f"Không thể gỡ bỏ module v4l2loopback: {unload_result.stderr.strip()}. Có thể nó vẫn đang được sử dụng.")
+            
+            time.sleep(2) # Wait for module to fully unload
             return True
         except Exception as e:
-            logger.error(f"Lỗi khi dọn dẹp thiết bị ảo: {str(e)}")
+            logger.error(f"Lỗi nghiêm trọng khi dọn dẹp thiết bị ảo: {str(e)}")
             return False
     
     def setup_virtual_camera(self):
@@ -332,35 +369,36 @@ class VirtualCameraManager:
     
     def stop_video_copying(self):
         if self.v4l2_process:
-            logger.info("Đang dừng quá trình sao chép video...")
-            self.v4l2_process.terminate()
+            logger.info(f"Đang dừng quá trình sao chép video (PID: {self.v4l2_process.pid})...")
             try:
-                self.v4l2_process.wait(timeout=5)
+                # Send SIGTERM first
+                self.v4l2_process.terminate()
+                self.v4l2_process.wait(timeout=5) # Wait for graceful termination
+                logger.info("Quá trình sao chép video đã được dừng (terminate).")
             except subprocess.TimeoutExpired:
+                logger.warning("Quá trình sao chép video không dừng sau 5 giây (terminate), gửi SIGKILL...")
                 self.v4l2_process.kill()
+                try:
+                    self.v4l2_process.wait(timeout=2) # Wait for kill
+                    logger.info("Quá trình sao chép video đã được dừng (kill).")
+                except subprocess.TimeoutExpired:
+                    logger.error("Không thể dừng quá trình sao chép video ngay cả với SIGKILL.")
+            except Exception as e:
+                logger.error(f"Lỗi khi dừng quá trình sao chép video: {e}")
             self.v4l2_process = None
-    
-    def start(self):
-        v4l2_setup_success = self.setup_virtual_camera()
-        if v4l2_setup_success:
-            if self.start_video_copying():
-                logger.info("Sao chép video thành công từ camera thật sang thiết bị ảo")
-                return True, self.virtual_device
-            else:
-                logger.warning("Không thể sao chép video sang thiết bị ảo, sử dụng thiết bị gốc")
-                return False, self.physical_device
         else:
-            logger.warning("Không thể thiết lập thiết bị ảo, sử dụng thiết bị gốc")
-            return False, self.physical_device
+            logger.info("Không có quá trình sao chép video nào đang chạy để dừng.")
     
     def stop(self):
+        logger.info("Bắt đầu quy trình dừng VirtualCameraManager...")
         self.stop_video_copying()
-        try:
-            subprocess.run(["sudo", "modprobe", "-r", "v4l2loopback"], 
-                          capture_output=True, text=True)
-        except Exception:
-            pass
-        logger.info("Đã dừng quản lý camera ảo")
+        # It's generally better to let cleanup_existing_devices handle module unloading 
+        # as part of the next startup, or a dedicated cleanup script.
+        # However, if a specific stop requires unloading, it can be done here, 
+        # but ensure no other process (like a new stream starting immediately) needs it.
+        # For now, we rely on cleanup_existing_devices during the next setup_virtual_camera call.
+        # self.cleanup_existing_devices() # Consider if this is truly needed on every stop
+        logger.info("Đã dừng quản lý camera ảo (VirtualCameraManager.stop).")
 
 class VideoStreamManager:
     def __init__(self, physical_device="/dev/video0", virtual_device="/dev/video10", 
@@ -560,22 +598,35 @@ class VideoStreamManager:
 
     def stop_streaming(self):
         if self.streaming_process:
-            logger.info("Đang dừng quá trình streaming HLS...")
-            self.streaming_process.terminate()
+            logger.info(f"Đang dừng quá trình streaming HLS (PID: {self.streaming_process.pid})...")
             try:
-                self.streaming_process.wait(timeout=5)
+                # Send SIGTERM first
+                self.streaming_process.terminate()
+                self.streaming_process.wait(timeout=10) # Increased timeout for GStreamer/FFmpeg
+                logger.info("Quá trình streaming HLS đã được dừng (terminate).")
             except subprocess.TimeoutExpired:
+                logger.warning("Quá trình streaming HLS không dừng sau 10 giây (terminate), gửi SIGKILL...")
                 self.streaming_process.kill()
+                try:
+                    self.streaming_process.wait(timeout=5) # Wait for kill
+                    logger.info("Quá trình streaming HLS đã được dừng (kill).")
+                except subprocess.TimeoutExpired:
+                    logger.error("Không thể dừng quá trình streaming HLS ngay cả với SIGKILL.")
+            except Exception as e:
+                logger.error(f"Lỗi khi dừng quá trình streaming HLS: {e}")
             self.streaming_process = None
             if device_uuid and id_token:
                 update_streaming_status(device_uuid, id_token, False)
-
+        else:
+            logger.info("Không có quá trình streaming HLS nào đang chạy để dừng.")
+    
     def stop(self):
+        logger.info("Bắt đầu quy trình dừng VideoStreamManager...")
         self.stop_streaming()
-        self.virtual_camera_manager.stop()
+        self.virtual_camera_manager.stop() # Ensure virtual camera resources are released
         self.clean_hls_files()
         self.running = False
-        logger.info("Dịch vụ đã dừng hoàn toàn")
+        logger.info("Dịch vụ VideoStreamManager đã dừng hoàn toàn.")
 
     def cleanup(self):
         self.stop()
