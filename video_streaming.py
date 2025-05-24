@@ -388,8 +388,8 @@ class VirtualCameraManager:
             self.v4l2_process = None
         else:
             logger.info("Không có quá trình sao chép video nào đang chạy để dừng.")
-    
-    def start(self):
+
+    def start(self): # Ensure this method exists from previous fix
         v4l2_setup_success = self.setup_virtual_camera()
         if v4l2_setup_success:
             if self.start_video_copying():
@@ -397,13 +397,21 @@ class VirtualCameraManager:
                 return True, self.virtual_device
             else:
                 logger.warning("Không thể sao chép video sang thiết bị ảo, sử dụng thiết bị gốc")
-                # Attempt to stop virtual camera components if copying failed, to allow fallback
-                self.stop_video_copying() # Stop any lingering copy process
-                # self.cleanup_existing_devices() # Optionally, fully clean up v4l2loopback if direct physical use is next
+                self.stop_video_copying() 
                 return False, self.physical_device
         else:
             logger.warning("Không thể thiết lập thiết bị ảo, sử dụng thiết bị gốc")
             return False, self.physical_device
+    
+    def stop(self): # Add this method back
+        logger.info("Bắt đầu quy trình dừng VirtualCameraManager...")
+        self.stop_video_copying()
+        # The cleanup_existing_devices call is usually better placed at the start of setup_virtual_camera
+        # to ensure a clean state before creating new devices.
+        # If you need to explicitly unload the module on every stop, you can call it here,
+        # but be mindful of quick restarts.
+        # self.cleanup_existing_devices() 
+        logger.info("Đã dừng quản lý camera ảo (VirtualCameraManager.stop).")
 
 class VideoStreamManager:
     def __init__(self, physical_device="/dev/video0", virtual_device="/dev/video10", 
