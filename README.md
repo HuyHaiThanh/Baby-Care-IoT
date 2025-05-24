@@ -1,21 +1,97 @@
-# Baby Care IoT với Raspberry Pi 2B
+# Baby-Care-IoT
 
-Dự án IoT sử dụng Raspberry Pi 2B, Firebase Firestore, và ngrok để xây dựng hệ thống giám sát trẻ em.
+Hệ thống giám sát trẻ sơ sinh sử dụng Internet of Things (IoT), Raspberry Pi và Firebase.
 
-## Mô tả dự án
+## Tổng quan
 
-Dự án này gồm hai phần chức năng chính:
+Baby-Care-IoT là một hệ thống giám sát trẻ sơ sinh thông minh, sử dụng Raspberry Pi để thu thập và truyền hình ảnh từ phòng trẻ sơ sinh đến các thiết bị của người giám sát thông qua Firebase. Hệ thống có khả năng:
 
-1. **Đăng ký thiết bị với Firebase Firestore**: Tự động đăng ký thiết bị vào Firestore khi khởi động với UUID duy nhất.
-2. **Quản lý video streaming**: Xử lý stream video từ camera và cập nhật trạng thái lên Firebase.
+- Thu thập và truyền hình ảnh thời gian thực
+- Tự động đăng ký thiết bị với Firebase Firestore
+- Phát hiện các trạng thái của trẻ (khóc, nằm sấp, không đắp chăn)
+- Cung cấp URL truy cập công khai thông qua ngrok
+- Gửi thông báo khi phát hiện hoạt động bất thường của trẻ
+
+## Cấu trúc dự án
+
+```
+Baby-Care-IoT/
+├── firebase_device_manager.py  # Module quản lý thiết bị với Firebase
+├── video_streaming.py          # Module xử lý và truyền video
+├── virtual_camera.py           # Module tạo và quản lý camera ảo
+├── setup_ngrok.py              # Module thiết lập ngrok tunnel
+└── README.md                   # Tài liệu hướng dẫn
+```
+
+## Thư viện sử dụng
+
+Dự án sử dụng các thư viện Python sau:
+
+### Xử lý hình ảnh và video
+- **ffmpeg**: Công cụ xử lý video và audio đa nền tảng
+- **gstreamer**: Framework đa phương tiện cho phép tạo ứng dụng xử lý âm thanh, video và dữ liệu
+- **v4l2loopback**: Module kernel Linux cho phép tạo thiết bị camera ảo
+
+### Kết nối mạng và cloud
+- **requests**: Thư viện HTTP đơn giản và hiệu quả
+- **python-dotenv**: Thư viện đọc các biến môi trường từ file .env
+- **uuid**: Thư viện tạo ID duy nhất cho thiết bị
+
+### Web servers
+- **apache2/nginx**: Web server để phục vụ stream video
+
+## Nguyên lý hoạt động
+
+### Kiến trúc tổng thể
+
+Hệ thống Baby-Care-IoT hoạt động theo mô hình kết hợp edge computing và cloud:
+
+1. **Edge** (Raspberry Pi):
+   - Thu thập dữ liệu hình ảnh từ camera
+   - Xử lý sơ bộ dữ liệu
+   - Phát stream video qua HLS
+   - Tự động đăng ký thiết bị với Firebase
+
+2. **Cloud** (Firebase):
+   - Lưu trữ thông tin thiết bị và cấu hình
+   - Theo dõi trạng thái hoạt động của thiết bị
+   - Cung cấp API cho ứng dụng di động/web
+   - Quản lý xác thực và phân quyền
+
+### Quy trình xử lý
+
+#### Đăng ký thiết bị
+1. **Khởi tạo thiết bị**: Tạo UUID duy nhất cho thiết bị Raspberry Pi
+2. **Đăng ký với Firebase**: Tạo document trong Firestore với thông tin thiết bị
+3. **Cập nhật trạng thái**: Thiết bị tự động cập nhật trạng thái online và URI stream
+
+#### Xử lý video
+1. **Thu thập hình ảnh**: Camera thu thập hình ảnh liên tục
+2. **Tạo camera ảo**: Sử dụng v4l2loopback để tạo thiết bị camera ảo
+3. **Stream video**: Chuyển đổi video thành HLS stream phục vụ qua web server
+4. **Cung cấp URL public**: Sử dụng ngrok để tạo URL có thể truy cập từ internet
+
+### Cơ chế kết nối với Firebase
+
+Hệ thống sử dụng Firebase REST API để tương tác với Cloud Firestore:
+1. Xác thực với Firebase Authentication để lấy token
+2. Sử dụng token để thực hiện các thao tác CRUD với Firestore
+3. Tự động cập nhật trạng thái thiết bị khi bắt đầu và kết thúc stream
+
+### Cơ chế stream video với ngrok
+
+1. Web server cục bộ (Apache/Nginx) phục vụ HLS stream
+2. Ngrok tạo tunnel đến web server cục bộ
+3. URL ngrok được cập nhật lên Firebase để người dùng có thể truy cập
+4. Kết nối được duy trì và tự động khởi động lại nếu gặp sự cố
 
 ## Yêu cầu hệ thống
 
-- Raspberry Pi 2B (hoặc mới hơn)
-- Camera USB hoặc Pi Camera
-- Kết nối Internet
-- Dự án Firebase với Cloud Firestore đã được thiết lập
-- ngrok (để cung cấp URL public cho streaming)
+- Raspberry Pi 2B Model B 
+- USB Camera hoặc Pi Camera
+- Kết nối internet
+- Tài khoản Firebase
+- Tài khoản ngrok
 
 ## Cài đặt
 
@@ -76,21 +152,15 @@ PASSWORD=YOUR_FIREBASE_AUTH_PASSWORD
 PROJECT_ID=YOUR_FIREBASE_PROJECT_ID
 ```
 
-## Cách sử dụng
+## Sử dụng
 
 ### Đăng ký thiết bị với Firebase
 
-Khi thiết bị khởi động lần đầu, chạy script `firebase_device_manager.py` để đăng ký thiết bị:
+Để đăng ký thiết bị với Firebase Firestore:
 
 ```bash
 python3 firebase_device_manager.py
 ```
-
-Script này sẽ:
-- Tạo UUID duy nhất cho thiết bị và lưu vào file `device_uuid.json`
-- Kiểm tra xem thiết bị đã được đăng ký trong collection `devices` chưa
-- Nếu chưa, tạo document mới với các giá trị mặc định
-- Nếu đã tồn tại, chỉ cập nhật URI và updatedAt
 
 ### Streaming video và cập nhật trạng thái
 
@@ -98,7 +168,7 @@ Script này sẽ:
 
 1. Khởi động ngrok để tạo tunnel:
 ```bash
-ngrok http 80
+python3 setup_ngrok.py
 ```
 
 2. Chạy script streaming:
@@ -106,67 +176,57 @@ ngrok http 80
 python3 video_streaming.py
 ```
 
-Script sẽ:
-- Khởi tạo thiết bị trên Firebase (nếu chưa đăng ký)
-- Cập nhật URI mới từ ngrok
-- Đổi trạng thái `isOnline` thành `true`
-- Khi tắt stream, tự động cập nhật trạng thái `isOnline` thành `false`
+## Chức năng chính
 
-## Giải thích chi tiết
+1. **Đăng ký và quản lý thiết bị**
+   - Tạo UUID duy nhất cho mỗi thiết bị Raspberry Pi
+   - Quản lý trạng thái hoạt động của thiết bị trên Firestore
+   - Cập nhật tự động URI stream khi ngrok URL thay đổi
 
-### File `firebase_device_manager.py`
+2. **Thu thập và truyền video**
+   - Hỗ trợ USB camera và Pi camera
+   - Tạo HLS stream cho truyền video ổn định
+   - Tối ưu hóa băng thông và chất lượng hình ảnh
 
-File này chứa các chức năng chính để tương tác với Firebase Firestore:
+3. **Kết nối mạng**
+   - Tạo URL public qua ngrok cho phép truy cập từ bên ngoài mạng cục bộ
+   - Tự động kết nối lại khi mất kết nối
+   - Hỗ trợ kết nối an toàn
 
-1. **get_device_uuid()**: Lấy hoặc tạo UUID cho thiết bị
-2. **get_ngrok_url()**: Lấy URL public từ ngrok
-3. **authenticate_firebase()**: Xác thực với Firebase Authentication 
-4. **check_device_exists()**: Kiểm tra thiết bị đã tồn tại trong Firestore chưa
-5. **register_device()**: Đăng ký thiết bị mới hoặc cập nhật thiết bị hiện có
-6. **update_streaming_status()**: Cập nhật trạng thái và URI streaming
-7. **initialize_device()**: Khởi tạo thiết bị khi khởi động
+## Cấu hình hệ thống
 
-### File `video_streaming.py`
+Các cấu hình chính được lưu trong Cloud Firestore:
 
-File này quản lý quá trình streaming video và tích hợp với Firebase:
+- **Ngưỡng phát hiện khóc (cryingThreshold)**: Mức độ nhạy khi phát hiện trẻ khóc
+- **Ngưỡng phát hiện không có chăn (noBlanketThreshold)**: Mức độ nhạy khi phát hiện trẻ không đắp chăn
+- **Ngưỡng phát hiện nằm sấp (proneThreshold)**: Mức độ nhạy khi phát hiện trẻ nằm sấp
+- **Ngưỡng phát hiện nằm nghiêng (sideThreshold)**: Mức độ nhạy khi phát hiện trẻ nằm nghiêng
 
-1. Tạo thiết bị ảo thông qua v4l2loopback
-2. Sao chép luồng video từ camera thật sang thiết bị ảo
-3. Tạo HLS stream với GStreamer
-4. Khi bắt đầu stream, tự động cập nhật `isOnline = true` và URI
-5. Khi kết thúc stream, tự động cập nhật `isOnline = false`
+## Gỡ lỗi
 
-## Cấu trúc Dữ liệu trên Firestore
+### Các vấn đề thường gặp
+
+- **Camera báo lỗi "device busy"**: Sử dụng lệnh `sudo fuser -k /dev/video0`
+- **Không lấy được URL ngrok**: Đảm bảo ngrok đang chạy và có thể truy cập API cục bộ
+- **Các lỗi xác thực Firebase**: Kiểm tra thông tin trong file `.env`
+
+## Phụ lục
+
+### Cấu trúc dữ liệu trên Firestore
 
 Trong collection `devices`, mỗi thiết bị sẽ có document với ID là UUID của thiết bị và các field:
 
-- **id**: UUID của thiết bị (string)
-- **createdAt**: Thời gian tạo thiết bị (timestamp)
-- **updatedAt**: Thời gian cập nhật cuối (timestamp)
-- **cryingThreshold**: Ngưỡng phát hiện khóc (mặc định 60) (number)
-- **noBlanketThreshold**: Ngưỡng phát hiện không có chăn (mặc định 60) (number)
-- **proneThreshold**: Ngưỡng phát hiện nằm sấp (mặc định 30) (number)
-- **sideThreshold**: Ngưỡng phát hiện nằm nghiêng (mặc định 30) (number)
-- **isOnline**: Trạng thái streaming (boolean)
-- **uri**: URL ngrok để truy cập stream (string)
+```json
+{
+  "id": "18ff6551-820b-4aad-b714-1143629970f0",
+  "createdAt": "2023-05-24T10:15:30.123Z",
+  "updatedAt": "2023-05-24T10:20:45.789Z",
+  "cryingThreshold": 60,
+  "noBlanketThreshold": 60,
+  "proneThreshold": 30,
+  "sideThreshold": 30,
+  "isOnline": true,
+  "uri": "https://ec35-1-53-82-6.ngrok-free.app"
+}
+```
 
-## Lưu ý
-
-- Đảm bảo file `.env` chứa thông tin xác thực chính xác
-- URI sẽ tự động cập nhật khi ngrok URI thay đổi 
-- Thiết bị cần có quyền truy cập vào camera
-- Đảm bảo ngrok đang chạy trước khi bắt đầu streaming
-- Sử dụng phương thức REST API thay vì Pyrebase để tiết kiệm tài nguyên
-
-## Xử lý sự cố
-
-- Nếu camera báo lỗi "device busy": `sudo fuser -k /dev/video0`
-- Nếu không lấy được URL ngrok: Đảm bảo ngrok đang chạy và truy cập được API cục bộ
-- Các lỗi xác thực: Kiểm tra thông tin trong file `.env`
-
-## Tài nguyên tham khảo
-
-- [Firebase REST API Documentation](https://firebase.google.com/docs/reference/rest/database)
-- [Cloud Firestore REST API](https://firebase.google.com/docs/firestore/use-rest-api)
-- [ngrok Documentation](https://ngrok.com/docs)
-- [v4l2loopback Documentation](https://github.com/umlaeute/v4l2loopback)
