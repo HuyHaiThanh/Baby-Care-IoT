@@ -207,6 +207,7 @@ class VideoStreamManager:
             "jpegdec", "!",
             "videoconvert", "!",
             "x264enc", "tune=zerolatency", "bitrate=64", "speed-preset=ultrafast", "key-int-max=30", "!",
+            "h264parse", "!",
             "mpegtsmux", "!",
             "hlssink",
             f"location={HLS_OUTPUT_DIR}/segment%05d.ts",
