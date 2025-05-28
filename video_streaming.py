@@ -240,10 +240,11 @@ class VirtualCameraManager:
     def start(self):
         """Bắt đầu sao chép video từ camera vật lý sang thiết bị ảo"""
         if self.start_copying():
-            return True, self.virtual_device
+            # Trả về thông tin thiết bị và format
+            return True, self.virtual_device, "yuv"
         else:
             logger.warning("Không thể sao chép video, sử dụng thiết bị vật lý")
-            return False, self.physical_device
+            return False, self.physical_device, "auto"
 
     def stop(self):
         """Dừng quá trình sao chép video"""
@@ -270,8 +271,14 @@ class VideoStreamManager:
         self.gst_process = None
         self.ip_address = get_ip_address()
         self.running = False
+        self.device_format = None  # Lưu trữ format được xác định
         configure_apache_no_cache()
         atexit.register(self.cleanup)
+    
+    def set_device_format(self, device_format):
+        """Thiết lập format cho thiết bị (để tránh phải detect lại)"""
+        self.device_format = device_format
+        logger.info(f"Device format set to: {device_format}")
 
     def clean_hls_files(self):
         try:
@@ -307,6 +314,12 @@ class VideoStreamManager:
     def detect_device_format(self, device):
         """Phát hiện format chính của thiết bị video"""
         try:
+            # Nếu là thiết bị virtual (thường là /dev/video17), mặc định là YUV
+            if device.endswith("17") or "virtual" in device.lower():
+                logger.info(f"Device {device} is virtual device, using YUV format")
+                return "yuv"
+            
+            # Đối với thiết bị vật lý, kiểm tra format thực tế
             result = subprocess.run(["v4l2-ctl", "--device", device, "--list-formats-ext"], 
                                   capture_output=True, text=True, timeout=5)
             if result.returncode == 0:
@@ -346,10 +359,19 @@ class VideoStreamManager:
         subprocess.run(["sudo", "fuser", "-k", source_device], capture_output=True)
         time.sleep(2)
         
-        # Kiểm tra thiết bị sẵn sàng trước khi streaming
-        if not self.wait_for_device_ready(source_device):
-            logger.error(f"Device {source_device} is not ready for streaming")
-            return False
+        # Chỉ kiểm tra thiết bị vật lý, không kiểm tra thiết bị virtual đang được FFmpeg sử dụng
+        if source_device.startswith("/dev/video") and not source_device.endswith("17"):
+            # Thiết bị vật lý - cần kiểm tra format
+            if not self.wait_for_device_ready(source_device):
+                logger.error(f"Device {source_device} is not ready for streaming")
+                return False
+        else:
+            # Thiết bị virtual - chỉ kiểm tra tồn tại
+            if not os.path.exists(source_device):
+                logger.error(f"Virtual device {source_device} does not exist")
+                return False
+            else:
+                logger.info(f"Virtual device {source_device} exists and ready for streaming")
         
         os.makedirs(HLS_OUTPUT_DIR, exist_ok=True)
         subprocess.run(["sudo", "chown", "-R", "www-data:www-data", HLS_OUTPUT_DIR], check=True)
@@ -365,7 +387,11 @@ class VideoStreamManager:
             logger.warning(f"Could not create initial playlist file: {e}")
 
         # Phát hiện format của thiết bị để sử dụng pipeline phù hợp
-        device_format = self.detect_device_format(source_device)
+        if self.device_format:
+            device_format = self.device_format
+            logger.info(f"Using pre-set device format: {device_format}")
+        else:
+            device_format = self.detect_device_format(source_device)
         
         if device_format == "mjpeg":
             # Pipeline cho MJPEG input
@@ -386,7 +412,7 @@ class VideoStreamManager:
                 "playlist-length=5"
             ]
         else:
-            # Pipeline cho YUV input (từ v4l2loopback)
+            # Pipeline cho YUV input (từ v4l2loopback hoặc raw camera)
             command = [
                 "sudo", "-u", "www-data", "gst-launch-1.0", "-v",
                 "v4l2src", f"device={source_device}", "!",
@@ -564,14 +590,17 @@ def main():
             # Sử dụng virtual camera
             logger.info("Starting virtual camera and streaming")
             vcam = VirtualCameraManager(args.physical_device, args.virtual_device)
-            success, source_device = vcam.start()
+            success, source_device, device_format = vcam.start()
             
             if success:
-                logger.info(f"Using virtual device: {source_device}")
+                logger.info(f"Using virtual device: {source_device} with format: {device_format}")
             else:
-                logger.warning(f"Using physical device: {source_device}")
+                logger.warning(f"Using physical device: {source_device} with format: {device_format}")
             
             stream = VideoStreamManager(width=args.width, height=args.height, framerate=args.framerate)
+            if device_format != "auto":
+                stream.set_device_format(device_format)
+            
             if not stream.start(source_device):
                 logger.error("Cannot start streaming")
                 vcam.stop()
