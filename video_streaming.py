@@ -29,10 +29,9 @@ def initialize_firebase():
     global device_uuid, id_token
     try:
         logger.info("Đang khởi tạo Firebase...")
-        device_info = initialize_device()
-        if device_info:
-            device_uuid = device_info.get('device_uuid')
-            id_token = device_info.get('id_token')
+        # initialize_device() trả về tuple (device_uuid, id_token)
+        device_uuid, id_token = initialize_device()
+        if device_uuid and id_token:
             logger.info(f"Thiết bị đã được khởi tạo: {device_uuid}")
             return True
         else:
