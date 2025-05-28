@@ -6,19 +6,13 @@ import time
 import subprocess
 import signal
 import argparse
-import threading
 import logging
 import atexit
 import socket
-import re
-import glob
 from firebase_device_manager import initialize_device, update_streaming_status, get_ngrok_url
 
 # Thiết lập logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('video_streaming')
 
 # Đường dẫn lưu trữ HLS
@@ -37,7 +31,7 @@ def get_ip_address():
         s.close()
         return ip_address
     except Exception as e:
-        logger.warning(f"Không thể lấy địa chỉ IP: {str(e)}")
+        logger.warning(f"Không thể lấy địa chỉ IP: {e}")
         return "localhost"
 
 def configure_apache_no_cache():
@@ -60,362 +54,159 @@ def configure_apache_no_cache():
         subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
         logger.info("Đã cấu hình Apache2 để vô hiệu hóa cache cho file HLS")
     except Exception as e:
-        logger.error(f"Lỗi khi cấu hình Apache2 no-cache: {str(e)}")
+        logger.error(f"Lỗi khi cấu hình Apache2 no-cache: {e}")
 
 def find_available_camera_devices():
-    """Tìm các thiết bị camera vật lý có sẵn và hoạt động"""
-    available_devices = []
-    
-    if os.path.exists("/dev/video0"):
-        try:
-            test_cmd = [
-                "ffmpeg", "-f", "v4l2", "-hide_banner", "-t", "0.1", 
-                "-i", "/dev/video0", "-frames:v", "1", "-f", "null", "-"
-            ]
-            test_process = subprocess.run(
-                test_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                timeout=2
-            )
-            
-            if test_process.returncode == 0 or "Immediate exit requested" in test_process.stderr.decode():
-                logger.info(f"Tìm thấy thiết bị camera hoạt động: /dev/video0")
-                return ["/dev/video0"]
-        except Exception as e:
-            logger.warning(f"Lỗi khi kiểm tra /dev/video0: {str(e)}")
-    
-    for i in range(1, 10):
+    """Tìm thiết bị camera vật lý có sẵn"""
+    for i in range(10):
         device = f"/dev/video{i}"
         if os.path.exists(device):
             try:
-                test_cmd = ["v4l2-ctl", "--device", device, "--all"]
-                test_process = subprocess.run(
-                    test_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=2
-                )
-                
-                output = test_process.stdout.decode()
-                if "Format Video Capture" in output and "loopback" not in output:
-                    capture_cmd = [
-                        "ffmpeg", "-f", "v4l2", "-hide_banner", "-t", "0.1", 
-                        "-i", device, "-frames:v", "1", "-f", "null", "-"
-                    ]
-                    capture_process = subprocess.run(
-                        capture_cmd,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.PIPE,
-                        timeout=2
-                    )
-                    
-                    if capture_process.returncode == 0 or "Immediate exit requested" in capture_process.stderr.decode():
-                        logger.info(f"Tìm thấy thiết bị camera hoạt động: {device}")
-                        return [device]
+                result = subprocess.run(["v4l2-ctl", "--device", device, "--all"],
+                                       capture_output=True, text=True, timeout=2)
+                if "Format Video Capture" in result.stdout and "loopback" not in result.stdout:
+                    logger.info(f"Tìm thấy thiết bị camera: {device}")
+                    return device
             except Exception as e:
-                logger.debug(f"Lỗi khi kiểm tra {device}: {str(e)}")
-    
-    logger.warning("Không tìm thấy thiết bị camera hoạt động")
-    if os.path.exists("/dev/video0"):
-        return ["/dev/video0"]
-    return []
+                logger.debug(f"Lỗi khi kiểm tra {device}: {e}")
+    logger.warning("Không tìm thấy thiết bị camera")
+    return "/dev/video0" if os.path.exists("/dev/video0") else None
 
 class VirtualCameraManager:
-    def __init__(self, physical_device="/dev/video0", virtual_device="/dev/video10"):
-        self.physical_device = physical_device
-        if not os.path.exists(physical_device):
-            available_cameras = find_available_camera_devices()
-            if available_cameras:
-                self.physical_device = available_cameras[0]
-                logger.info(f"Thiết bị camera vật lý được chỉ định không tồn tại. Chuyển sang thiết bị: {self.physical_device}")
-            else:
-                logger.warning(f"Không tìm thấy thiết bị camera nào khả dụng. Vẫn giữ nguyên thiết bị: {self.physical_device}")
-        
+    def __init__(self, physical_device="/dev/video0", virtual_device="/dev/video17"):
+        self.physical_device = physical_device if os.path.exists(physical_device) else find_available_camera_devices()
         self.virtual_device = virtual_device
         self.v4l2_process = None
-        self.copy_completed = False
-        self.device_freed = False
         self.virtual_device_created = False
-    
+
     def check_v4l2loopback_installed(self):
+        """Kiểm tra và cài đặt v4l2loopback nếu cần"""
         try:
-            check_available = subprocess.run(["modinfo", "v4l2loopback"], 
-                                          capture_output=True, text=True)
-            if check_available.returncode == 0:
+            if subprocess.run(["modinfo", "v4l2loopback"], capture_output=True).returncode == 0:
                 return True
-            check_installed = subprocess.run(["dpkg", "-s", "v4l2loopback-dkms"], 
-                                         capture_output=True, text=True)
-            if check_installed.returncode == 0:
-                return True
-            logger.warning("v4l2loopback chưa được cài đặt. Cố gắng cài đặt...")
+            logger.info("Cài đặt v4l2loopback...")
             subprocess.run(["sudo", "apt-get", "update", "-y"], capture_output=True)
-            install_result = subprocess.run(["sudo", "apt-get", "install", "-y", "v4l2loopback-dkms", "v4l2loopback-utils"], 
-                                         capture_output=True, text=True)
-            if install_result.returncode == 0:
-                logger.info("Đã cài đặt v4l2loopback thành công")
+            result = subprocess.run(["sudo", "apt-get", "install", "-y", "v4l2loopback-dkms", "v4l2loopback-utils"],
+                                   capture_output=True, text=True)
+            if result.returncode == 0:
+                logger.info("Đã cài đặt v4l2loopback")
                 return True
-            else:
-                logger.error(f"Không thể cài đặt v4l2loopback: {install_result.stderr}")
-                return False
-        except Exception as e:
-            logger.error(f"Lỗi khi kiểm tra v4l2loopback: {str(e)}")
+            logger.error(f"Cài đặt v4l2loopback thất bại: {result.stderr}")
             return False
-    
-    def find_available_video_device(self):
-        for i in range(10, 30):
-            device_path = f"/dev/video{i}"
-            if not os.path.exists(device_path):
-                return device_path, i
-        return "/dev/video10", 10
-    
+        except Exception as e:
+            logger.error(f"Lỗi khi kiểm tra v4l2loopback: {e}")
+            return False
+
     def cleanup_existing_devices(self):
+        """Dọn dẹp thiết bị ảo và module v4l2loopback"""
         try:
-            logger.info("Đang dọn dẹp các thiết bị video ảo hiện có...")
-            # Kill processes using any v4l2loopback devices
-            for i in range(30): # Check a reasonable range, e.g., /dev/video0 to /dev/video29
-                device_path = f"/dev/video{i}"
-                if os.path.exists(device_path):
-                    try:
-                        # Check if it's a v4l2loopback device
-                        device_info_process = subprocess.run(
-                            ["v4l2-ctl", "-d", device_path, "--info"],
-                            capture_output=True, text=True, timeout=2
-                        )
-                        if "v4l2loopback" in device_info_process.stdout or "loopback" in device_info_process.stdout:
-                            logger.info(f"Tìm thấy thiết bị v4l2loopback: {device_path}. Thử giải phóng...")
-                            # Kill processes using this device
-                            fuser_kill_cmd = ["sudo", "fuser", "-k", device_path]
-                            kill_proc = subprocess.run(fuser_kill_cmd, capture_output=True, text=True)
-                            if kill_proc.returncode == 0:
-                                logger.info(f"Đã giải phóng {device_path} bằng fuser.")
-                            elif kill_proc.stdout or kill_proc.stderr: # fuser might return 1 if no process was using it
-                                logger.info(f"fuser output for {device_path}: stdout='{kill_proc.stdout.strip()}', stderr='{kill_proc.stderr.strip()}'")
-                            time.sleep(0.5) # Brief pause after attempting to kill
-                    except subprocess.TimeoutExpired:
-                        logger.debug(f"Timeout khi kiểm tra {device_path} với v4l2-ctl.")
-                    except Exception as e:
-                        logger.debug(f"Lỗi khi kiểm tra hoặc giải phóng {device_path}: {str(e)}")
-            
-            # Unload the v4l2loopback module
-            unload_result = subprocess.run(["sudo", "modprobe", "-r", "v4l2loopback"],
-                                           capture_output=True, text=True)
-            if unload_result.returncode == 0:
-                logger.info("Đã gỡ bỏ module v4l2loopback thành công.")
-            else:
-                # Check if it was already unloaded or not loaded at all
-                check_loaded_cmd = ["lsmod"]
-                lsmod_output = subprocess.run(check_loaded_cmd, capture_output=True, text=True)
-                if "v4l2loopback" not in lsmod_output.stdout:
-                    logger.info("Module v4l2loopback không được nạp, không cần gỡ bỏ.")
-                else:
-                    logger.warning(f"Không thể gỡ bỏ module v4l2loopback: {unload_result.stderr.strip()}. Có thể nó vẫn đang được sử dụng.")
-            
-            time.sleep(2) # Wait for module to fully unload
+            for i in range(30):
+                device = f"/dev/video{i}"
+                if os.path.exists(device):
+                    result = subprocess.run(["v4l2-ctl", "-d", device, "--info"],
+                                           capture_output=True, text=True, timeout=2)
+                    if "v4l2loopback" in result.stdout:
+                        subprocess.run(["sudo", "fuser", "-k", device], capture_output=True)
+            subprocess.run(["sudo", "modprobe", "-r", "v4l2loopback"], capture_output=True)
+            logger.info("Đã dọn dẹp module v4l2loopback")
+            time.sleep(2)
             return True
         except Exception as e:
-            logger.error(f"Lỗi nghiêm trọng khi dọn dẹp thiết bị ảo: {str(e)}")
+            logger.error(f"Lỗi khi dọn dẹp thiết bị ảo: {e}")
             return False
-    
+
     def setup_virtual_camera(self):
+        """Thiết lập thiết bị ảo v4l2loopback"""
+        if not self.check_v4l2loopback_installed():
+            return False
+        self.cleanup_existing_devices()
         try:
-            if not self.check_v4l2loopback_installed():
-                logger.error("v4l2loopback không được cài đặt. Không thể tạo thiết bị camera ảo.")
-                return False
-            self.cleanup_existing_devices()
-            self.virtual_device, device_number = self.find_available_video_device()
-            logger.info(f"Sử dụng thiết bị ảo: {self.virtual_device}")
-            cmd = [
-                "sudo", "modprobe", "v4l2loopback",
-                f"video_nr={device_number}",
-                "exclusive_caps=0",
-                "card_label=VirtualCam"
-            ]
+            cmd = ["sudo", "modprobe", "v4l2loopback", "video_nr=17", "exclusive_caps=0", "card_label=VirtualCam", "devices=1"]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                logger.error(f"Không thể nạp module v4l2loopback: {result.stderr}")
-                simple_cmd = ["sudo", "modprobe", "v4l2loopback"]
-                simple_result = subprocess.run(simple_cmd, capture_output=True, text=True)
-                if simple_result.returncode != 0:
-                    logger.error(f"Không thể nạp module v4l2loopback đơn giản: {simple_result.stderr}")
-                    return False
-                logger.info("Đã nạp module v4l2loopback thành công với cách đơn giản")
+                logger.error(f"Nạp module v4l2loopback thất bại: {result.stderr}")
+                return False
             time.sleep(3)
             if os.path.exists(self.virtual_device):
                 self.virtual_device_created = True
-                logger.info(f"Thiết bị ảo {self.virtual_device} đã được tạo thành công")
+                logger.info(f"Thiết bị ảo {self.virtual_device} đã được tạo")
                 return True
-            else:
-                for i in range(20):
-                    test_device = f"/dev/video{i}"
-                    if os.path.exists(test_device):
-                        try:
-                            device_info = subprocess.run(["v4l2-ctl", "-d", test_device, "--info"], 
-                                                    capture_output=True, text=True, timeout=2)
-                            if "v4l2loopback" in device_info.stdout or "loopback" in device_info.stdout:
-                                self.virtual_device = test_device
-                                self.virtual_device_created = True
-                                logger.info(f"Tìm thấy thiết bị v4l2loopback: {test_device}")
-                                return True
-                        except Exception:
-                            continue
-            logger.error("Không tìm thấy thiết bị v4l2loopback nào")
+            logger.error(f"Không tìm thấy {self.virtual_device}")
             return False
         except Exception as e:
-            logger.error(f"Lỗi khi thiết lập v4l2loopback: {str(e)}")
+            logger.error(f"Lỗi khi thiết lập v4l2loopback: {e}")
             return False
-    
-    def free_physical_device(self):
-        if self.copy_completed and not self.device_freed:
-            logger.info(f"Đang giải phóng thiết bị vật lý {self.physical_device}...")
-            if self.v4l2_process:
-                logger.info("Dừng tiến trình sao chép video để giải phóng thiết bị vật lý")
-                self.v4l2_process.terminate()
-                try:
-                    self.v4l2_process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.v4l2_process.kill()
-                self.v4l2_process = None
-            try:
-                check_busy = subprocess.run(["fuser", "-v", self.physical_device], 
-                                          capture_output=True, text=True)
-                if check_busy.returncode == 0:
-                    subprocess.run(["sudo", "fuser", "-k", self.physical_device], 
-                                 capture_output=True, text=True)
-                    time.sleep(1)
-            except Exception as e:
-                logger.error(f"Lỗi khi giải phóng thiết bị: {str(e)}")
-            self.device_freed = True
-            logger.info(f"Thiết bị vật lý {self.physical_device} đã được giải phóng")
-    
+
     def start_video_copying(self):
+        """Sao chép video từ thiết bị vật lý sang thiết bị ảo"""
         if not self.virtual_device_created:
-            logger.warning("Không thể sao chép video vì thiết bị ảo không tồn tại")
+            logger.warning("Thiết bị ảo chưa được tạo")
             return False
-        if self.v4l2_process:
-            return True
-        logger.info(f"Bắt đầu sao chép video từ {self.physical_device} sang {self.virtual_device}")
         try:
-            try:
-                check_busy = subprocess.run(["fuser", "-v", self.physical_device], 
-                                        capture_output=True, text=True)
-                if check_busy.returncode == 0:
-                    logger.warning(f"Camera {self.physical_device} đang được sử dụng bởi tiến trình khác. Thử giải phóng...")
-                    subprocess.run(["sudo", "fuser", "-k", self.physical_device], 
-                                capture_output=True, text=True)
-                    time.sleep(2)
-            except Exception:
-                pass
+            subprocess.run(["sudo", "fuser", "-k", self.physical_device, self.virtual_device], capture_output=True)
+            time.sleep(2)
             command = [
-                "ffmpeg", 
-                "-f", "v4l2", 
+                "sudo", "ffmpeg",
+                "-f", "v4l2",
+                "-input_format", "mjpeg",
+                "-video_size", "640x480",
+                "-framerate", "30",
                 "-i", self.physical_device,
-                "-vcodec", "copy",
-                "-f", "v4l2", 
+                "-c:v", "mjpeg",
+                "-f", "v4l2",
                 self.virtual_device
             ]
-            logger.info("Sử dụng lệnh sao chép: " + " ".join(command))
+            logger.info(f"Sao chép video: {' '.join(command)}")
             self.v4l2_process = subprocess.Popen(
-                command, 
+                command,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
+                text=True
             )
             time.sleep(5)
             if self.v4l2_process.poll() is not None:
-                stdout, stderr = self.v4l2_process.communicate()
-                logger.error(f"Không thể sao chép video: {stderr.decode()}")
-                self.v4l2_process = None
-                return self.start_video_copying_alternative()
-            self.copy_completed = True
-            threading.Timer(5.0, self.free_physical_device).start()
-            logger.info("Video đang được sao chép thành công")
-            return True
-        except Exception as e:
-            logger.error(f"Lỗi khi bắt đầu sao chép video: {str(e)}")
-            if self.v4l2_process:
-                self.v4l2_process.terminate()
-                self.v4l2_process = None
-            return False
-
-    def start_video_copying_alternative(self):
-        logger.info("Thử phương pháp thay thế để sao chép video...")
-        try:
-            command = [
-                "gst-launch-1.0", "-v",
-                f"v4l2src device={self.physical_device} ! videoconvert ! v4l2sink device={self.virtual_device}"
-            ]
-            self.v4l2_process = subprocess.Popen(
-                " ".join(command),
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            time.sleep(5)
-            if self.v4l2_process.poll() is not None:
-                stdout, stderr = self.v4l2_process.communicate()
-                logger.error(f"Phương pháp sao chép thay thế cũng thất bại: {stderr.decode()}")
+                _, stderr = self.v4l2_process.communicate()
+                logger.error(f"Sao chép video thất bại: {stderr}")
                 self.v4l2_process = None
                 return False
-            self.copy_completed = True
-            threading.Timer(5.0, self.free_physical_device).start()
-            logger.info("Video đang được sao chép thành công với phương pháp thay thế")
+            logger.info("Đang sao chép video thành công")
             return True
         except Exception as e:
-            logger.error(f"Lỗi khi sử dụng phương pháp sao chép thay thế: {str(e)}")
+            logger.error(f"Lỗi khi sao chép video: {e}")
             if self.v4l2_process:
                 self.v4l2_process.terminate()
                 self.v4l2_process = None
             return False
-    
-    def stop_video_copying(self):
-        if self.v4l2_process:
-            logger.info(f"Đang dừng quá trình sao chép video (PID: {self.v4l2_process.pid})...")
-            try:
-                # Send SIGTERM first
-                self.v4l2_process.terminate()
-                self.v4l2_process.wait(timeout=5) # Wait for graceful termination
-                logger.info("Quá trình sao chép video đã được dừng (terminate).")
-            except subprocess.TimeoutExpired:
-                logger.warning("Quá trình sao chép video không dừng sau 5 giây (terminate), gửi SIGKILL...")
-                self.v4l2_process.kill()
-                try:
-                    self.v4l2_process.wait(timeout=2) # Wait for kill
-                    logger.info("Quá trình sao chép video đã được dừng (kill).")
-                except subprocess.TimeoutExpired:
-                    logger.error("Không thể dừng quá trình sao chép video ngay cả với SIGKILL.")
-            except Exception as e:
-                logger.error(f"Lỗi khi dừng quá trình sao chép video: {e}")
-            self.v4l2_process = None
-        else:
-            logger.info("Không có quá trình sao chép video nào đang chạy để dừng.")
 
-    def start(self): # Ensure this method exists from previous fix
-        v4l2_setup_success = self.setup_virtual_camera()
-        if v4l2_setup_success:
-            if self.start_video_copying():
-                logger.info("Sao chép video thành công từ camera thật sang thiết bị ảo")
-                return True, self.virtual_device
-            else:
-                logger.warning("Không thể sao chép video sang thiết bị ảo, sử dụng thiết bị gốc")
-                self.stop_video_copying() 
-                return False, self.physical_device
-        else:
-            logger.warning("Không thể thiết lập thiết bị ảo, sử dụng thiết bị gốc")
-            return False, self.physical_device
-    
-    def stop(self): # Add this method back
-        logger.info("Bắt đầu quy trình dừng VirtualCameraManager...")
+    def stop_video_copying(self):
+        """Dừng sao chép video"""
+        if self.v4l2_process:
+            logger.info(f"Dừng sao chép video (PID: {self.v4l2_process.pid})")
+            try:
+                self.v4l2_process.terminate()
+                self.v4l2_process.wait(timeout=5)
+                logger.info("Đã dừng sao chép video")
+            except subprocess.TimeoutExpired:
+                self.v4l2_process.kill()
+                logger.info("Đã buộc dừng sao chép video")
+            except Exception as e:
+                logger.error(f"Lỗi khi dừng sao chép video: {e}")
+            self.v4l2_process = None
+
+    def start(self):
+        if self.setup_virtual_camera() and self.start_video_copying():
+            return True, self.virtual_device
         self.stop_video_copying()
-        # The cleanup_existing_devices call is usually better placed at the start of setup_virtual_camera
-        # to ensure a clean state before creating new devices.
-        # If you need to explicitly unload the module on every stop, you can call it here,
-        # but be mindful of quick restarts.
-        # self.cleanup_existing_devices() 
-        logger.info("Đã dừng quản lý camera ảo (VirtualCameraManager.stop).")
+        logger.warning(f"Sử dụng thiết bị vật lý: {self.physical_device}")
+        return False, self.physical_device
+
+    def stop(self):
+        self.stop_video_copying()
+        self.cleanup_existing_devices()
+        logger.info("Đã dừng VirtualCameraManager")
 
 class VideoStreamManager:
-    def __init__(self, physical_device="/dev/video0", virtual_device="/dev/video10", 
-                 width=352, height=198, framerate=25):
+    def __init__(self, physical_device="/dev/video0", virtual_device="/dev/video17", width=640, height=480, framerate=30):
         self.physical_device = physical_device
         self.virtual_device = virtual_device
         self.width = width
@@ -429,154 +220,112 @@ class VideoStreamManager:
         configure_apache_no_cache()
 
     def clean_hls_files(self):
-        """Xóa các file HLS cũ trước khi bắt đầu streaming"""
+        """Xóa các file HLS cũ"""
         try:
-            subprocess.run(["sudo", "rm", "-f", f"{HLS_OUTPUT_DIR}/segment*.ts"], capture_output=True)
-            subprocess.run(["sudo", "rm", "-f", f"{HLS_OUTPUT_DIR}/playlist.m3u8"], capture_output=True)
+            subprocess.run(["sudo", "rm", "-f", f"{HLS_OUTPUT_DIR}/segment*.ts", f"{HLS_OUTPUT_DIR}/playlist.m3u8"],
+                           capture_output=True)
             logger.info("Đã xóa các file HLS cũ")
         except Exception as e:
-            logger.error(f"Lỗi khi xóa file HLS cũ: {str(e)}")
+            logger.error(f"Lỗi khi xóa file HLS: {e}")
 
     def start_streaming(self, source_device):
-        if self.streaming_process:
-            return True
-        logger.info(f"Bắt đầu streaming HLS từ {source_device}")
+        """Bắt đầu streaming với GStreamer"""
         try:
+            subprocess.run(["sudo", "fuser", "-k", source_device], capture_output=True)
+            time.sleep(3)
             os.makedirs(HLS_OUTPUT_DIR, exist_ok=True)
             subprocess.run(["sudo", "chown", "-R", "www-data:www-data", HLS_OUTPUT_DIR], check=True)
             subprocess.run(["sudo", "chmod", "-R", "775", HLS_OUTPUT_DIR], check=True)
             self.clean_hls_files()
             command = [
                 "sudo", "-u", "www-data", "gst-launch-1.0", "-v",
-                "v4l2src", f"device={source_device}", "!", 
-                f"image/jpeg,width=352,height=288,framerate={self.framerate}/1", "!",
+                "v4l2src", f"device={source_device}", "!",
+                f"image/jpeg,width={self.width},height={self.height},framerate={self.framerate}/1", "!",
                 "jpegdec", "!",
-                "videoscale", "!",
-                f"video/x-raw,width={self.width},height={self.height}", "!",
                 "videoconvert", "!",
-                "x264enc", "tune=zerolatency", "bitrate=128", "speed-preset=ultrafast", "key-int-max=30", "!", 
+                "x264enc", "tune=zerolatency", "bitrate=64", "speed-preset=ultrafast", "key-int-max=30", "!",
                 "mpegtsmux", "!",
-                "hlssink", 
-                f"location={HLS_OUTPUT_DIR}/segment%05d.ts", 
+                "hlssink",
+                f"location={HLS_OUTPUT_DIR}/segment%05d.ts",
                 f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
-                "target-duration=5", 
+                "target-duration=5",
                 "max-files=10"
             ]
-            logger.info("Sử dụng lệnh: " + " ".join(command))
+            logger.info(f"Streaming GStreamer: {' '.join(command)}")
             self.streaming_process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
+                text=True
             )
             time.sleep(10)
             if self.streaming_process.poll() is not None:
-                stdout, stderr = self.streaming_process.communicate()
-                logger.error(f"Không thể bắt đầu streaming: {stderr.decode()}")
+                _, stderr = self.streaming_process.communicate()
+                logger.error(f"GStreamer thất bại: {stderr}")
                 self.streaming_process = None
                 return False
             if not os.path.exists(f"{HLS_OUTPUT_DIR}/playlist.m3u8"):
-                logger.error(f"File playlist.m3u8 không được tạo trong {HLS_OUTPUT_DIR}")
+                logger.error("Không tạo được playlist.m3u8")
                 self.streaming_process.terminate()
                 self.streaming_process = None
                 return False
-            if device_uuid and id_token:
-                ngrok_url = get_ngrok_url()
-                if ngrok_url:
-                    stream_url = f"{ngrok_url}/playlist.m3u8"
-                    logger.info(f"Stream URL: {stream_url}")
-                    update_streaming_status(device_uuid, id_token, True, stream_url)
-                else:
-                    update_streaming_status(device_uuid, id_token, True)
             stream_url = f"http://{self.ip_address}/playlist.m3u8"
-            logger.info(f"Streaming HLS đã bắt đầu thành công: {stream_url}")
+            logger.info(f"Streaming HLS bắt đầu: {stream_url}")
             return True
         except Exception as e:
-            logger.error(f"Lỗi khi bắt đầu streaming HLS: {str(e)}")
+            logger.error(f"Lỗi khi streaming GStreamer: {e}")
             if self.streaming_process:
                 self.streaming_process.terminate()
                 self.streaming_process = None
             return False
 
     def start_streaming_alternative(self, source_device):
-        logger.info("Đang thử phương pháp thay thế để streaming với ffmpeg...")
+        """Bắt đầu streaming với FFmpeg"""
         try:
+            subprocess.run(["sudo", "fuser", "-k", source_device], capture_output=True)
+            time.sleep(3)
             self.clean_hls_files()
             command = [
-                "sudo", "ffmpeg", 
-                "-f", "v4l2", 
+                "sudo", "ffmpeg",
+                "-f", "v4l2",
                 "-input_format", "mjpeg",
-                "-video_size", "352x288",
+                "-video_size", f"{self.width}x{self.height}",
                 "-framerate", f"{self.framerate}",
-                "-i", source_device, 
-                "-vf", f"scale={self.width}:{self.height}",
-                "-c:v", "libx264", 
-                "-preset", "ultrafast", 
-                "-tune", "zerolatency", 
-                "-b:v", "128k",
+                "-i", source_device,
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-tune", "zerolatency",
+                "-b:v", "64k",
                 "-g", "30",
-                "-f", "hls", 
-                "-hls_time", "5", 
-                "-hls_list_size", "10", 
+                "-f", "hls",
+                "-hls_time", "5",
+                "-hls_list_size", "10",
                 "-hls_flags", "delete_segments+append_list",
                 f"{HLS_OUTPUT_DIR}/playlist.m3u8"
             ]
-            logger.info("Sử dụng lệnh ffmpeg: " + " ".join(command))
+            logger.info(f"Streaming FFmpeg: {' '.join(command)}")
             self.streaming_process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
+                text=True
             )
             time.sleep(10)
             if self.streaming_process.poll() is not None:
-                stdout, stderr = self.streaming_process.communicate()
-                logger.warning(f"MJPEG không hoạt động, thử lại không chỉ định định dạng: {stderr.decode()}")
-                command = [
-                    "sudo", "ffmpeg", 
-                    "-f", "v4l2", 
-                    "-video_size", "352x288",
-                    "-framerate", f"{self.framerate}",
-                    "-i", source_device, 
-                    "-vf", f"scale={self.width}:{self.height}",
-                    "-c:v", "libx264", 
-                    "-preset", "ultrafast", 
-                    "-tune", "zerolatency", 
-                    "-b:v", "128k",
-                    "-g", "30",
-                    "-f", "hls", 
-                    "-hls_time", "5", 
-                    "-hls_list_size", "10", 
-                    "-hls_flags", "delete_segments+append_list",
-                    f"{HLS_OUTPUT_DIR}/playlist.m3u8"
-                ]
-                logger.info("Sử dụng lệnh ffmpeg thay thế: " + " ".join(command))
-                self.streaming_process = subprocess.Popen(
-                    command,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-                time.sleep(10)
-                if self.streaming_process.poll() is not None:
-                    stdout, stderr = self.streaming_process.communicate()
-                    logger.error(f"Phương pháp thay thế cũng thất bại: {stderr.decode()}")
-                    return False
+                _, stderr = self.streaming_process.communicate()
+                logger.error(f"FFmpeg thất bại: {stderr}")
+                self.streaming_process = None
+                return False
             if not os.path.exists(f"{HLS_OUTPUT_DIR}/playlist.m3u8"):
-                logger.error(f"File playlist.m3u8 không được tạo trong {HLS_OUTPUT_DIR}")
+                logger.error("Không tạo được playlist.m3u8")
                 self.streaming_process.terminate()
                 self.streaming_process = None
                 return False
-            if device_uuid and id_token:
-                ngrok_url = get_ngrok_url()
-                if ngrok_url:
-                    stream_url = f"{ngrok_url}/playlist.m3u8"
-                    logger.info(f"Stream URL: {stream_url}")
-                    update_streaming_status(device_uuid, id_token, True, stream_url)
-                else:
-                    update_streaming_status(device_uuid, id_token, True)
             stream_url = f"http://{self.ip_address}/playlist.m3u8"
-            logger.info(f"Streaming HLS đã bắt đầu với ffmpeg: {stream_url}")
+            logger.info(f"Streaming HLS bắt đầu: {stream_url}")
             return True
         except Exception as e:
-            logger.error(f"Lỗi khi sử dụng phương pháp thay thế: {str(e)}")
+            logger.error(f"Lỗi khi streaming FFmpeg: {e}")
             if self.streaming_process:
                 self.streaming_process.terminate()
                 self.streaming_process = None
@@ -584,62 +333,48 @@ class VideoStreamManager:
 
     def start(self):
         if self.running:
-            logger.info("Dịch vụ đã đang chạy")
+            logger.info("Dịch vụ đang chạy")
             return True
         if not os.path.exists(self.physical_device):
-            available_cameras = find_available_camera_devices()
-            if available_cameras:
-                self.physical_device = available_cameras[0]
-                logger.info(f"Đã tìm thấy camera khả dụng: {self.physical_device}")
-            else:
-                logger.error(f"Không tìm thấy thiết bị camera nào khả dụng.")
+            self.physical_device = find_available_camera_devices()
+            if not self.physical_device:
+                logger.error("Không tìm thấy thiết bị camera")
                 return False
         success, source_device = self.virtual_camera_manager.start()
         if success:
             logger.info(f"Sử dụng thiết bị ảo: {source_device}")
         else:
             logger.warning(f"Sử dụng thiết bị vật lý: {source_device}")
-        if not self.start_streaming(source_device):
-            logger.warning("GStreamer thất bại, thử phương pháp ffmpeg...")
-            if not self.start_streaming_alternative(source_device):
-                logger.error("Không thể bắt đầu streaming")
-                self.virtual_camera_manager.stop()
-                return False
+        if not self.start_streaming(source_device) and not self.start_streaming_alternative(source_device):
+            logger.error("Không thể bắt đầu streaming")
+            self.virtual_camera_manager.stop()
+            return False
         self.running = True
-        logger.info("Dịch vụ đã bắt đầu thành công")
+        logger.info("Dịch vụ bắt đầu thành công")
         return True
 
     def stop_streaming(self):
         if self.streaming_process:
-            logger.info(f"Đang dừng quá trình streaming HLS (PID: {self.streaming_process.pid})...")
+            logger.info(f"Dừng streaming (PID: {self.streaming_process.pid})")
             try:
-                # Send SIGTERM first
                 self.streaming_process.terminate()
-                self.streaming_process.wait(timeout=10) # Increased timeout for GStreamer/FFmpeg
-                logger.info("Quá trình streaming HLS đã được dừng (terminate).")
+                self.streaming_process.wait(timeout=10)
+                logger.info("Đã dừng streaming")
             except subprocess.TimeoutExpired:
-                logger.warning("Quá trình streaming HLS không dừng sau 10 giây (terminate), gửi SIGKILL...")
                 self.streaming_process.kill()
-                try:
-                    self.streaming_process.wait(timeout=5) # Wait for kill
-                    logger.info("Quá trình streaming HLS đã được dừng (kill).")
-                except subprocess.TimeoutExpired:
-                    logger.error("Không thể dừng quá trình streaming HLS ngay cả với SIGKILL.")
+                logger.info("Đã buộc dừng streaming")
             except Exception as e:
-                logger.error(f"Lỗi khi dừng quá trình streaming HLS: {e}")
+                logger.error(f"Lỗi khi dừng streaming: {e}")
             self.streaming_process = None
             if device_uuid and id_token:
                 update_streaming_status(device_uuid, id_token, False)
-        else:
-            logger.info("Không có quá trình streaming HLS nào đang chạy để dừng.")
-    
+
     def stop(self):
-        logger.info("Bắt đầu quy trình dừng VideoStreamManager...")
         self.stop_streaming()
-        self.virtual_camera_manager.stop() # Ensure virtual camera resources are released
+        self.virtual_camera_manager.stop()
         self.clean_hls_files()
         self.running = False
-        logger.info("Dịch vụ VideoStreamManager đã dừng hoàn toàn.")
+        logger.info("Dịch vụ VideoStreamManager dừng hoàn toàn")
 
     def cleanup(self):
         self.stop()
@@ -648,18 +383,20 @@ def main():
     global device_uuid, id_token
     parser = argparse.ArgumentParser(description='Video streaming với v4l2loopback')
     parser.add_argument('--physical-device', default='/dev/video0', help='Thiết bị camera vật lý')
-    parser.add_argument('--virtual-device', default='/dev/video10', help='Thiết bị camera ảo')
-    parser.add_argument('--width', type=int, default=352, help='Chiều rộng video')
-    parser.add_argument('--height', type=int, default=198, help='Chiều cao video')
-    parser.add_argument('--framerate', type=int, default=25, help='Tốc độ khung hình')
+    parser.add_argument('--virtual-device', default='/dev/video17', help='Thiết bị camera ảo')
+    parser.add_argument('--width', type=int, default=640, help='Chiều rộng video')
+    parser.add_argument('--height', type=int, default=480, help='Chiều cao video')
+    parser.add_argument('--framerate', type=int, default=30, help='Tốc độ khung hình')
     parser.add_argument('--no-firebase', action='store_true', help='Không sử dụng Firebase')
     parser.add_argument('--direct', action='store_true', help='Stream trực tiếp từ camera vật lý')
     args = parser.parse_args()
+
     if not args.no_firebase:
-        logger.info("Đang khởi tạo thiết bị trên Firebase...")
+        logger.info("Khởi tạo Firebase...")
         device_uuid, id_token = initialize_device()
         if not device_uuid or not id_token:
-            logger.warning("Không thể khởi tạo thiết bị trên Firebase. Tiếp tục mà không có Firebase.")
+            logger.warning("Không thể khởi tạo Firebase")
+
     manager = VideoStreamManager(
         physical_device=args.physical_device,
         virtual_device=args.virtual_device,
@@ -667,55 +404,37 @@ def main():
         height=args.height,
         framerate=args.framerate
     )
+
     def signal_handler(sig, frame):
-        logger.info("Đã nhận tín hiệu ngắt. Đang dừng dịch vụ...")
+        logger.info("Nhận tín hiệu ngắt. Dừng dịch vụ...")
         manager.stop()
+        exit(0)
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+
     try:
         if args.direct:
             os.makedirs(HLS_OUTPUT_DIR, exist_ok=True)
             subprocess.run(["sudo", "chown", "-R", "www-data:www-data", HLS_OUTPUT_DIR], check=True)
             subprocess.run(["sudo", "chmod", "-R", "775", HLS_OUTPUT_DIR], check=True)
             manager.clean_hls_files()
-            # Dọn dẹp file HLS cũ
-            try:
-                subprocess.run(["sudo", "rm", "-f", f"{HLS_OUTPUT_DIR}/segment*.ts", f"{HLS_OUTPUT_DIR}/playlist*.ts"], 
-                            capture_output=True)
-                logger.info("Đã xóa các file .ts cũ")
-            except Exception as e:
-                logger.error(f"Lỗi khi xóa file .ts: {str(e)}")
-            # Kiểm tra và giải phóng camera
-            try:
-                check_busy = subprocess.run(["fuser", "-v", args.physical_device], 
-                                        capture_output=True, text=True)
-                if check_busy.returncode == 0:
-                    logger.warning(f"Camera {args.physical_device} đang được sử dụng. Giải phóng...")
-                    subprocess.run(["sudo", "fuser", "-k", args.physical_device], 
-                                capture_output=True, text=True)
-                    time.sleep(2)
-            except Exception as e:
-                logger.error(f"Lỗi khi kiểm tra camera: {str(e)}")
-            # Reset module uvcvideo
-            try:
-                subprocess.run(["sudo", "modprobe", "-r", "uvcvideo"], capture_output=True)
-                time.sleep(1)
-                subprocess.run(["sudo", "modprobe", "uvcvideo"], capture_output=True)
-                logger.info("Đã reset module uvcvideo")
-            except Exception as e:
-                logger.error(f"Lỗi khi reset module uvcvideo: {str(e)}")
+            subprocess.run(["sudo", "fuser", "-k", args.physical_device], capture_output=True)
+            time.sleep(2)
+            subprocess.run(["sudo", "modprobe", "-r", "uvcvideo"], capture_output=True)
+            time.sleep(1)
+            subprocess.run(["sudo", "modprobe", "uvcvideo"], capture_output=True)
             command = [
                 "sudo", "-u", "www-data", "ffmpeg",
                 "-f", "v4l2",
                 "-input_format", "mjpeg",
-                "-video_size", "352x288",
+                "-video_size", f"{args.width}x{args.height}",
                 "-framerate", f"{args.framerate}",
                 "-i", args.physical_device,
-                "-vf", f"scale={args.width}:{args.height}",
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
                 "-tune", "zerolatency",
-                "-b:v", "128k",
+                "-b:v", "64k",
                 "-g", "30",
                 "-f", "hls",
                 "-hls_time", "5",
@@ -723,18 +442,19 @@ def main():
                 "-hls_flags", "delete_segments+append_list",
                 f"{HLS_OUTPUT_DIR}/playlist.m3u8"
             ]
-            logger.info("Sử dụng lệnh ffmpeg: " + " ".join(command))
+            logger.info(f"Streaming trực tiếp: {' '.join(command)}")
             streaming_process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
+                text=True
             )
             time.sleep(15)
             if streaming_process.poll() is not None:
-                stdout, stderr = streaming_process.communicate()
-                logger.error(f"Không thể bắt đầu streaming: {stderr.decode()}")
+                _, stderr = streaming_process.communicate()
+                logger.error(f"Streaming trực tiếp thất bại: {stderr}")
             elif not os.path.exists(f"{HLS_OUTPUT_DIR}/playlist.m3u8"):
-                logger.error(f"File playlist.m3u8 không được tạo trong {HLS_OUTPUT_DIR}")
+                logger.error("Không tạo được playlist.m3u8")
                 streaming_process.terminate()
             else:
                 if not args.no_firebase:
@@ -742,22 +462,19 @@ def main():
                     if ngrok_url:
                         stream_url = f"{ngrok_url}/playlist.m3u8"
                         update_streaming_status(device_uuid, id_token, True, stream_url)
-                logger.info("Streaming HLS đã bắt đầu. Nhấn Ctrl+C để dừng.")
+                logger.info("Streaming HLS bắt đầu. Nhấn Ctrl+C để dừng")
                 streaming_process.wait()
         else:
             if manager.start():
-                logger.info(f"Dịch vụ đã bắt đầu thành công.")
+                logger.info("Dịch vụ bắt đầu thành công")
                 while manager.running:
                     time.sleep(1)
             else:
                 logger.error("Không thể khởi động dịch vụ")
     except KeyboardInterrupt:
-        logger.info("Đã nhận ngắt từ bàn phím. Đang dừng dịch vụ...")
+        logger.info("Nhận ngắt từ bàn phím. Dừng dịch vụ...")
     finally:
-        if not args.direct:
-            manager.stop()
-        elif device_uuid and id_token:
-            update_streaming_status(device_uuid, id_token, False)
+        manager.stop()
 
 if __name__ == "__main__":
     main()
