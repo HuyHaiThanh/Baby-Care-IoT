@@ -95,11 +95,14 @@ def parse_arguments():
     display_group = parser.add_argument_group('Tùy chọn hiển thị')
     display_group.add_argument('--simple-display', action='store_true', help='Sử dụng chế độ hiển thị đơn giản (tương thích tốt hơn)')
     display_group.add_argument('--debug', action='store_true', help='Hiển thị thông tin log và chi tiết lỗi')
-    
-    # Nhóm tùy chọn server
+      # Nhóm tùy chọn server
     server_group = parser.add_argument_group('Cấu hình kết nối server')
     server_group.add_argument('--image-server', help='Địa chỉ server hình ảnh (IP:port hoặc hostname:port)')
     server_group.add_argument('--audio-server', help='Địa chỉ server âm thanh (IP:port hoặc hostname:port)')
+    
+    # Nhóm tùy chọn camera
+    camera_group = parser.add_argument_group('Cấu hình camera')
+    camera_group.add_argument('--camera-device', help='Chỉ định thiết bị camera cụ thể (ví dụ: /dev/video17)')
     
     return parser.parse_args()
 
@@ -337,14 +340,20 @@ def main():
             print("Detailed error:")
             traceback.print_exc()
             audio_client = None
-    
-    # Start CameraClient if enabled
+      # Start CameraClient if enabled
     if run_camera_mode:
         print("\n>> Starting image processing module...")
         try:
             # Lấy khoảng thời gian chụp ảnh từ cấu hình thay vì tham số dòng lệnh
             from config import PHOTO_INTERVAL
-            camera_client = CameraClient(interval=PHOTO_INTERVAL)
+            
+            # Tạo camera client với thiết bị camera cụ thể nếu được chỉ định
+            if args.camera_device:
+                print(f">> Using specified camera device: {args.camera_device}")
+                camera_client = CameraClient(interval=PHOTO_INTERVAL, camera_device=args.camera_device)
+            else:
+                camera_client = CameraClient(interval=PHOTO_INTERVAL)
+                
             if not camera_client.start():
                 print("✗ Camera client start() returned False")
                 camera_client = None

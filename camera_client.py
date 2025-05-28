@@ -39,13 +39,14 @@ class CameraClient:
     """
     Client for capturing and sending images to the server
     """
-    def __init__(self, interval=1, max_queue_size=5):
+    def __init__(self, interval=1, max_queue_size=5, camera_device=None):
         """
         Initialize camera client
         
         Args:
             interval (int): Time interval between image captures (seconds)
             max_queue_size (int): Maximum number of images in the queue (default 5)
+            camera_device (str): Specific camera device path (e.g., '/dev/video17')
         """
         self.interval = interval
         self.running = False
@@ -55,6 +56,7 @@ class CameraClient:
         self.dropped_images_count = 0
         self.sending_in_progress = False
         self.queue_size_counter = 0  # Biến đếm số ảnh hiện tại trong queue
+        self.camera_device = camera_device  # Thiết bị camera được chỉ định
         
         # Image statistics
         self.sent_success_count = 0
@@ -177,8 +179,7 @@ class CameraClient:
                 elif '/dev/video' in line:
                     # This is a device path
                     match = re.search(r'/dev/video(\d+)', line)
-                    if match and current_device:
-                        devices.append({
+                    if match and current_device:                        devices.append({
                             'device': match.group(0),
                             'index': match.group(1),
                             'name': current_device
@@ -190,6 +191,19 @@ class CameraClient:
     
     def get_best_video_device(self):
         """Choose the most suitable camera device"""
+        # Nếu có thiết bị camera được chỉ định, sử dụng nó
+        if self.camera_device:
+            logger.info(f"Using specified camera device: {self.camera_device}")
+            # Kiểm tra xem thiết bị có tồn tại không
+            if os.path.exists(self.camera_device):
+                return {
+                    'device': self.camera_device,
+                    'index': self.camera_device.split('video')[-1] if 'video' in self.camera_device else '0',
+                    'name': f"Specified device {self.camera_device}"
+                }
+            else:
+                logger.warning(f"Specified camera device {self.camera_device} does not exist, falling back to auto-detection")
+        
         devices = self.detect_video_devices()
         
         if not devices:

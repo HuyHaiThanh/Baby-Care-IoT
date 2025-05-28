@@ -133,6 +133,13 @@ Các tùy chọn:
 - `--simple-display`: Sử dụng chế độ hiển thị đơn giản (tương thích tốt hơn)
 - `--debug`: Hiển thị thông tin log và chi tiết lỗi
 - `--image-server`: Địa chỉ server hình ảnh (IP:port hoặc hostname:port)
+- `--camera-device`: Chỉ định thiết bị camera cụ thể (ví dụ: `/dev/video17`)
+
+Ví dụ để sử dụng camera `/dev/video17`:
+
+```bash
+python main.py --camera-device /dev/video17
+```
 
 ## Chức năng chính
 
