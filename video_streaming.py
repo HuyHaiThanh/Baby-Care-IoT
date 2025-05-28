@@ -288,12 +288,14 @@ class VideoStreamManager:
                                   capture_output=True, text=True, timeout=5)
             if result.returncode == 0:
                 logger.info(f"Device {device} formats:\n{result.stdout}")
-                # Kiểm tra xem có MJPEG format không
-                if "MJPG" in result.stdout or "Motion-JPEG" in result.stdout:
-                    logger.info(f"Device {device} supports MJPEG format")
+                # Kiểm tra xem có format hỗ trợ không (MJPEG hoặc YUV)
+                if ("MJPG" in result.stdout or "Motion-JPEG" in result.stdout or 
+                    "YU12" in result.stdout or "YUV" in result.stdout or 
+                    "Planar YUV" in result.stdout):
+                    logger.info(f"Device {device} supports compatible video format")
                     return True
                 else:
-                    logger.warning(f"Device {device} may not support MJPEG format")
+                    logger.warning(f"Device {device} may not support compatible video format")
                     return False
             else:
                 logger.error(f"Cannot check formats for device {device}: {result.stderr}")
@@ -301,6 +303,29 @@ class VideoStreamManager:
         except Exception as e:
             logger.error(f"Error checking device format: {e}")
             return False
+
+    def detect_device_format(self, device):
+        """Phát hiện format chính của thiết bị video"""
+        try:
+            result = subprocess.run(["v4l2-ctl", "--device", device, "--list-formats-ext"], 
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                output = result.stdout
+                if "MJPG" in output or "Motion-JPEG" in output:
+                    logger.info(f"Device {device} detected as MJPEG format")
+                    return "mjpeg"
+                elif "YU12" in output or "YUV" in output or "Planar YUV" in output:
+                    logger.info(f"Device {device} detected as YUV format")
+                    return "yuv"
+                else:
+                    logger.warning(f"Unknown format for device {device}, defaulting to YUV")
+                    return "yuv"
+            else:
+                logger.warning(f"Cannot detect format for device {device}, defaulting to YUV")
+                return "yuv"
+        except Exception as e:
+            logger.error(f"Error detecting device format: {e}")
+            return "yuv"
 
     def wait_for_device_ready(self, device, max_wait=15):
         """Đợi thiết bị sẵn sàng với format phù hợp"""
@@ -339,22 +364,44 @@ class VideoStreamManager:
         except Exception as e:
             logger.warning(f"Could not create initial playlist file: {e}")
 
-        command = [
-            "sudo", "-u", "www-data", "gst-launch-1.0", "-v",
-            "v4l2src", f"device={source_device}", "!",
-            f"image/jpeg,width={self.width},height={self.height},framerate={self.framerate}/1", "!",
-            "jpegdec", "!",
-            "videoconvert", "!",
-            "x264enc", "tune=zerolatency", "bitrate=64", "speed-preset=ultrafast", "key-int-max=30", "!",
-            "h264parse", "!",
-            "mpegtsmux", "!",
-            "hlssink",
-            f"location={HLS_OUTPUT_DIR}/segment%05d.ts",
-            f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
-            "target-duration=5",
-            "max-files=10",
-            "playlist-length=5"
-        ]
+        # Phát hiện format của thiết bị để sử dụng pipeline phù hợp
+        device_format = self.detect_device_format(source_device)
+        
+        if device_format == "mjpeg":
+            # Pipeline cho MJPEG input
+            command = [
+                "sudo", "-u", "www-data", "gst-launch-1.0", "-v",
+                "v4l2src", f"device={source_device}", "!",
+                f"image/jpeg,width={self.width},height={self.height},framerate={self.framerate}/1", "!",
+                "jpegdec", "!",
+                "videoconvert", "!",
+                "x264enc", "tune=zerolatency", "bitrate=64", "speed-preset=ultrafast", "key-int-max=30", "!",
+                "h264parse", "!",
+                "mpegtsmux", "!",
+                "hlssink",
+                f"location={HLS_OUTPUT_DIR}/segment%05d.ts",
+                f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
+                "target-duration=5",
+                "max-files=10",
+                "playlist-length=5"
+            ]
+        else:
+            # Pipeline cho YUV input (từ v4l2loopback)
+            command = [
+                "sudo", "-u", "www-data", "gst-launch-1.0", "-v",
+                "v4l2src", f"device={source_device}", "!",
+                f"video/x-raw,format=I420,width={self.width},height={self.height},framerate={self.framerate}/1", "!",
+                "videoconvert", "!",
+                "x264enc", "tune=zerolatency", "bitrate=64", "speed-preset=ultrafast", "key-int-max=30", "!",
+                "h264parse", "!",
+                "mpegtsmux", "!",
+                "hlssink",
+                f"location={HLS_OUTPUT_DIR}/segment%05d.ts",
+                f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
+                "target-duration=5",
+                "max-files=10",
+                "playlist-length=5"
+            ]
         logger.info(f"Start streaming with GStreamer: {' '.join(command)}")
         self.gst_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         time.sleep(10)
