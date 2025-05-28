@@ -115,73 +115,124 @@ class VideoStreaming:
             logger.error(f"Thiết bị video {self.input_device} không tồn tại!")
             logger.info("Hãy chắc chắn rằng virtual_camera.py đang chạy")
             return False
-        
-        logger.info(f"Thiết bị video {self.input_device} đã sẵn sàng")
+        logger.info("ffmpeg copy process started")
         return True
 
-    def update_firebase_status(self, is_online):
-        """Cập nhật trạng thái streaming trên Firebase"""
-        if not self.device_uuid or not self.id_token:
-            logger.warning("Chưa có thông tin thiết bị Firebase")
-            return False
-            
+    def stop_copying(self):
+        if self.ffmpeg_process:
+            logger.info("Stopping ffmpeg copy process")
+            self.ffmpeg_process.terminate()
+            try:
+                self.ffmpeg_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.ffmpeg_process.kill()
+            self.ffmpeg_process = None
+
+    def start(self):
+        """Bắt đầu sao chép video từ camera vật lý sang thiết bị ảo"""
+        if self.start_copying():
+            return True, self.virtual_device
+        else:
+            logger.warning("Không thể sao chép video, sử dụng thiết bị vật lý")
+            return False, self.physical_device
+
+    def stop(self):
+        """Dừng quá trình sao chép video"""
+        self.stop_copying()
+
+class VideoStreamManager:
+    def __init__(self, device="/dev/video17", width=640, height=480, framerate=30):
+        self.device = device
+        self.width = width
+        self.height = height
+        self.framerate = framerate
+        self.gst_process = None
+        self.ip_address = get_ip_address()
+        self.running = False
+        configure_apache_no_cache()
+        atexit.register(self.cleanup)
+
+    def clean_hls_files(self):
         try:
-            # Lấy URL ngrok nếu có
-            ngrok_url = get_ngrok_url()
-            
-            # Tạo streaming URL
-            ip_address = self.get_ip_address()
-            streaming_url = f"http://{ip_address}/playlist.m3u8"
-            
-            if ngrok_url:
-                streaming_url = f"{ngrok_url}/playlist.m3u8"
-            
-            success = update_streaming_status(
-                self.device_uuid, 
-                self.id_token, 
-                is_online, 
-                streaming_url if is_online else None
-            )
-            
-            if success:
-                status_text = "ONLINE" if is_online else "OFFLINE"
-                logger.info(f"Đã cập nhật trạng thái Firebase: {status_text}")
-                if is_online and streaming_url:
-                    logger.info(f"Streaming URL: {streaming_url}")
-            else:
-                logger.error("Không thể cập nhật trạng thái Firebase")
-                
-            return success
+            subprocess.run(["sudo", "rm", "-f", f"{HLS_OUTPUT_DIR}/segment*.ts", f"{HLS_OUTPUT_DIR}/playlist.m3u8"], capture_output=True)
+            logger.info("Deleted old HLS segments and playlist")
         except Exception as e:
             logger.error(f"Lỗi cập nhật Firebase: {e}")
             return False
 
-    def start_streaming(self):
-        """Bắt đầu streaming HLS bằng GStreamer"""
-        if self.running:
-            logger.warning("Streaming đã đang chạy")
-            return False
-
-        logger.info(f"Bắt đầu streaming HLS từ {self.input_device}")
+    def start_streaming(self, source_device):
+        subprocess.run(["sudo", "fuser", "-k", source_device], capture_output=True)
+        time.sleep(2)
+        os.makedirs(HLS_OUTPUT_DIR, exist_ok=True)
+        subprocess.run(["sudo", "chown", "-R", "www-data:www-data", HLS_OUTPUT_DIR], check=True)
+        subprocess.run(["sudo", "chmod", "-R", "775", HLS_OUTPUT_DIR], check=True)
+        self.clean_hls_files()
         
-        # GStreamer command cho HLS streaming
-        gst_cmd = [
-            "sudo", "gst-launch-1.0", "-v",
-            "v4l2src", f"device={self.input_device}", "!",
-            "image/jpeg,width=640,height=480,framerate=30/1", "!",
+        # Tạo file playlist trống để đảm bảo quyền ghi
+        try:
+            subprocess.run(["sudo", "touch", f"{HLS_OUTPUT_DIR}/playlist.m3u8"], check=True)
+            subprocess.run(["sudo", "chown", "www-data:www-data", f"{HLS_OUTPUT_DIR}/playlist.m3u8"], check=True)
+            subprocess.run(["sudo", "chmod", "664", f"{HLS_OUTPUT_DIR}/playlist.m3u8"], check=True)
+        except Exception as e:
+            logger.warning(f"Could not create initial playlist file: {e}")
+
+        command = [
+            "sudo", "-u", "www-data", "gst-launch-1.0", "-v",
+            "v4l2src", f"device={source_device}", "!",
+            f"image/jpeg,width={self.width},height={self.height},framerate={self.framerate}/1", "!",
             "jpegdec", "!",
             "videoconvert", "!",
             "x264enc", "tune=zerolatency", "bitrate=64", "speed-preset=ultrafast", "key-int-max=30", "!",
-            "h264parse", "!", "mpegtsmux", "!",
-            "hlssink", f"location={self.output_dir}/segment%05d.ts",
-            f"playlist-location={self.output_dir}/playlist.m3u8",
-            "target-duration=5", "max-files=10", "playlist-length=5"
+            "h264parse", "!",
+            "mpegtsmux", "!",
+            "hlssink",
+            f"location={HLS_OUTPUT_DIR}/segment%05d.ts",
+            f"playlist-location={HLS_OUTPUT_DIR}/playlist.m3u8",
+            "target-duration=5",
+            "max-files=10",
+            "playlist-length=5"
         ]
-        
+        logger.info(f"Start streaming with GStreamer: {' '.join(command)}")
+        self.gst_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(10)
+        if self.gst_process.poll() is not None:
+            _, err = self.gst_process.communicate()
+            logger.error(f"GStreamer failed: {err}")
+            self.gst_process = None
+            return False
+        if not os.path.exists(f"{HLS_OUTPUT_DIR}/playlist.m3u8"):
+            logger.error("Playlist file not created")
+            self.gst_process.terminate()
+            self.gst_process = None
+            return False
+        logger.info(f"Streaming started at http://{self.ip_address}/playlist.m3u8")
+        return True
+
+    def start_streaming_alternative(self, source_device):
+        """Phương pháp thay thế sử dụng ffmpeg"""
+        logger.info("Trying alternative streaming method with ffmpeg...")
         try:
-            logger.info(f"Chạy lệnh: {' '.join(gst_cmd)}")
-            self.gstreamer_process = subprocess.Popen(
-                gst_cmd,
+            self.clean_hls_files()
+            command = [
+                "sudo", "ffmpeg",
+                "-f", "v4l2",
+                "-video_size", f"{self.width}x{self.height}",
+                "-framerate", str(self.framerate),
+                "-i", source_device,
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-tune", "zerolatency",
+                "-b:v", "64k",
+                "-g", "30",
+                "-f", "hls",
+                "-hls_time", "5",
+                "-hls_list_size", "10",
+                "-hls_flags", "delete_segments+append_list",
+                f"{HLS_OUTPUT_DIR}/playlist.m3u8"
+            ]
+            logger.info("Using ffmpeg command: " + " ".join(command))
+            self.gst_process = subprocess.Popen(
+                command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
             )
@@ -248,64 +299,96 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 def main():
-    global video_streaming
+    global device_uuid, id_token
     
-    # Đăng ký signal handlers
+    parser = argparse.ArgumentParser(description='Video streaming service')
+    parser.add_argument('--physical-device', default='/dev/video0', help='Physical camera device')
+    parser.add_argument('--virtual-device', default='/dev/video17', help='Virtual camera device')
+    parser.add_argument('--width', type=int, default=640, help='Video width')
+    parser.add_argument('--height', type=int, default=480, help='Video height')
+    parser.add_argument('--framerate', type=int, default=30, help='Video framerate')
+    parser.add_argument('--no-firebase', action='store_true', help='Disable Firebase integration')
+    parser.add_argument('--direct', action='store_true', help='Stream directly from physical camera')
+    args = parser.parse_args()
+    
+    # Khởi tạo Firebase nếu được yêu cầu
+    if not args.no_firebase:
+        logger.info("Initializing Firebase device...")
+        device_uuid, id_token = initialize_device()
+        if not device_uuid or not id_token:
+            logger.warning("Cannot initialize Firebase device. Continuing without Firebase.")
+    
+    def signal_handler(sig, frame):
+        logger.info("Received interrupt signal. Stopping service...")
+        if 'vcam' in locals():
+            vcam.stop()
+        if 'stream' in locals():
+            stream.stop()
+        exit(0)
+    
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # Khởi tạo video streaming
-    video_streaming = VideoStreaming()
-    
     try:
-        # Bước 1: Khởi tạo Firebase
-        if not video_streaming.initialize_firebase():
-            logger.error("Không thể khởi tạo Firebase!")
-            return 1
-        
-        # Bước 2: Cấu hình Apache
-        video_streaming.configure_apache_no_cache()
-        
-        # Bước 3: Thiết lập thư mục output
-        if not video_streaming.setup_output_directory():
-            logger.error("Không thể thiết lập thư mục output!")
-            return 1
-        
-        # Bước 4: Dọn dẹp file cũ
-        video_streaming.cleanup_old_files()
-        
-        # Bước 5: Kiểm tra thiết bị đầu vào
-        if not video_streaming.check_input_device():
-            logger.error("Không thể sử dụng thiết bị video đầu vào!")
-            logger.info("Hãy chạy virtual_camera.py trước")
-            return 1
-        
-        # Bước 6: Bắt đầu streaming
-        if not video_streaming.start_streaming():
-            logger.error("Không thể bắt đầu streaming!")
-            return 1
-        
-        # Bước 7: Monitor process
-        logger.info("HLS streaming đang chạy. Nhấn Ctrl+C để dừng.")
-        logger.info(f"Playlist có thể truy cập tại: http://{video_streaming.get_ip_address()}/playlist.m3u8")
-        
-        # Tạo thread để monitor GStreamer process
-        monitor_thread = threading.Thread(target=video_streaming.monitor_process)
-        monitor_thread.daemon = True
-        monitor_thread.start()
-        
-        # Chờ cho đến khi bị dừng
-        while video_streaming.running:
-            time.sleep(1)
+        if args.direct:
+            # Stream trực tiếp từ camera vật lý
+            logger.info("Starting direct streaming from physical camera")
+            stream = VideoStreamManager(width=args.width, height=args.height, framerate=args.framerate)
             
+            if not stream.start(args.physical_device):
+                logger.error("Cannot start direct streaming")
+                exit(1)
+            
+            # Cập nhật trạng thái Firebase nếu có
+            if not args.no_firebase and device_uuid and id_token:
+                ngrok_url = get_ngrok_url()
+                if ngrok_url:
+                    stream_url = f"{ngrok_url}/playlist.m3u8"
+                    update_streaming_status(device_uuid, id_token, True, stream_url)
+            
+            logger.info("Direct streaming started. Press Ctrl+C to stop.")
+            while stream.running:
+                time.sleep(1)
+        else:
+            # Sử dụng virtual camera
+            logger.info("Starting virtual camera and streaming")
+            vcam = VirtualCameraManager(args.physical_device, args.virtual_device)
+            success, source_device = vcam.start()
+            
+            if success:
+                logger.info(f"Using virtual device: {source_device}")
+            else:
+                logger.warning(f"Using physical device: {source_device}")
+            
+            stream = VideoStreamManager(width=args.width, height=args.height, framerate=args.framerate)
+            if not stream.start(source_device):
+                logger.error("Cannot start streaming")
+                vcam.stop()
+                exit(1)
+            
+            # Cập nhật trạng thái Firebase nếu có
+            if not args.no_firebase and device_uuid and id_token:
+                ngrok_url = get_ngrok_url()
+                if ngrok_url:
+                    stream_url = f"{ngrok_url}/playlist.m3u8"
+                    update_streaming_status(device_uuid, id_token, True, stream_url)
+            
+            logger.info("Streaming service started. Press Ctrl+C to stop.")
+            while stream.running:
+                time.sleep(1)
+                
     except KeyboardInterrupt:
         logger.info("Nhận Ctrl+C, đang dừng...")
     except Exception as e:
         logger.error(f"Lỗi chương trình: {e}")
     finally:
-        video_streaming.stop_streaming()
-    
-    return 0
+        # Cleanup
+        if 'stream' in locals():
+            stream.stop()
+        if 'vcam' in locals():
+            vcam.stop()
+        if device_uuid and id_token:
+            update_streaming_status(device_uuid, id_token, False)
 
 if __name__ == "__main__":
     exit_code = main()
