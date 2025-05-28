@@ -116,45 +116,116 @@ class VirtualCameraManager:
         
         self.virtual_device = virtual_device
         self.ffmpeg_process = None
+        
+        # Tạo thiết bị v4l2loopback nếu chưa tồn tại
+        self.create_loopback_device()
+
+    def create_loopback_device(self):
+        """Tạo thiết bị v4l2loopback cho virtual camera"""
+        try:
+            # Kiểm tra xem v4l2loopback module đã được load chưa
+            result = subprocess.run(["lsmod"], capture_output=True, text=True)
+            if "v4l2loopback" not in result.stdout:
+                logger.info("Loading v4l2loopback module...")
+                # Load module với card_label để dễ nhận diện
+                subprocess.run([
+                    "sudo", "modprobe", "v4l2loopback", 
+                    "devices=1", 
+                    f"video_nr={self.virtual_device.split('video')[1]}", 
+                    "card_label=Virtual_Camera",
+                    "exclusive_caps=1"
+                ], check=True)
+                logger.info("v4l2loopback module loaded successfully")
+            
+            # Đợi thiết bị được tạo
+            max_wait = 10
+            for i in range(max_wait):
+                if os.path.exists(self.virtual_device):
+                    logger.info(f"Virtual device {self.virtual_device} created successfully")
+                    time.sleep(2)  # Đợi thêm để thiết bị ổn định
+                    return True
+                time.sleep(1)
+            
+            logger.error(f"Virtual device {self.virtual_device} was not created after {max_wait} seconds")
+            return False
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error creating loopback device: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error creating loopback device: {e}")
+            return False
 
     def start_copying(self):
+        """Bắt đầu copy video từ thiết bị vật lý sang thiết bị ảo"""
+        # Đảm bảo thiết bị ảo đã được tạo
+        if not os.path.exists(self.virtual_device):
+            logger.error(f"Virtual device {self.virtual_device} does not exist")
+            return False
+        
         # Giải phóng thiết bị cũ
         subprocess.run(["sudo", "fuser", "-k", self.physical_device, self.virtual_device], capture_output=True)
         time.sleep(2)
+        
+        # Lệnh ffmpeg được tối ưu cho v4l2loopback
         command = [
-            "sudo", "ffmpeg",
+            "ffmpeg",
             "-f", "v4l2",
             "-input_format", "mjpeg",
             "-video_size", "640x480",
             "-framerate", "30",
             "-i", self.physical_device,
-            "-c:v", "mjpeg",
+            "-pix_fmt", "yuv420p",  # Format phù hợp cho v4l2loopback
             "-f", "v4l2",
             self.virtual_device,
-            "-loglevel", "debug"
+            "-v", "info"
         ]
-        logger.info("Start copying video from physical to virtual device")
+        
+        logger.info("Starting video copy from physical to virtual device")
         logger.info(f"FFmpeg command: {' '.join(command)}")
-        self.ffmpeg_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         
-        # Đợi lâu hơn để đảm bảo ffmpeg copy ổn định
-        logger.info("Waiting for ffmpeg copy to stabilize...")
-        time.sleep(10)
-        
-        if self.ffmpeg_process.poll() is not None:
-            _, err = self.ffmpeg_process.communicate()
-            logger.error(f"ffmpeg copy process failed: {err}")
-            self.ffmpeg_process = None
-            return False
-        
-        # Kiểm tra virtual device có hoạt động không
-        if not os.path.exists(self.virtual_device):
-            logger.error(f"Virtual device {self.virtual_device} was not created")
-            self.stop_copying()
-            return False
+        try:
+            self.ffmpeg_process = subprocess.Popen(
+                command, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True
+            )
             
-        logger.info("ffmpeg copy process started and stabilized")
-        return True
+            # Đợi ffmpeg khởi động và ổn định
+            logger.info("Waiting for ffmpeg copy to stabilize...")
+            time.sleep(5)
+            
+            # Kiểm tra xem process có chạy không
+            if self.ffmpeg_process.poll() is not None:
+                stdout, stderr = self.ffmpeg_process.communicate()
+                logger.error(f"ffmpeg copy process failed:")
+                logger.error(f"stdout: {stdout}")
+                logger.error(f"stderr: {stderr}")
+                self.ffmpeg_process = None
+                return False
+            
+            # Kiểm tra thiết bị ảo có hoạt động không bằng cách test với v4l2-ctl
+            test_result = subprocess.run([
+                "v4l2-ctl", "--device", self.virtual_device, "--list-formats-ext"
+            ], capture_output=True, text=True)
+            
+            if test_result.returncode == 0 and test_result.stdout.strip():
+                logger.info(f"Virtual device {self.virtual_device} is working properly")
+                logger.info(f"Available formats:\n{test_result.stdout}")
+                return True
+            else:
+                logger.error(f"Virtual device {self.virtual_device} is not working properly")
+                logger.error(f"v4l2-ctl output: {test_result.stderr}")
+                self.stop_copying()
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error starting ffmpeg copy process: {e}")
+            if self.ffmpeg_process:
+                self.ffmpeg_process.terminate()
+                self.ffmpeg_process = None
+            return False
 
     def stop_copying(self):
         if self.ffmpeg_process:
@@ -177,6 +248,18 @@ class VirtualCameraManager:
     def stop(self):
         """Dừng quá trình sao chép video"""
         self.stop_copying()
+        
+    def cleanup(self):
+        """Cleanup v4l2loopback module"""
+        self.stop_copying()
+        try:
+            # Remove v4l2loopback module
+            logger.info("Removing v4l2loopback module...")
+            subprocess.run(["sudo", "modprobe", "-r", "v4l2loopback"], 
+                         capture_output=True, check=False)
+            logger.info("v4l2loopback module removed")
+        except Exception as e:
+            logger.warning(f"Error removing v4l2loopback module: {e}")
 
 class VideoStreamManager:
     def __init__(self, device="/dev/video17", width=640, height=480, framerate=30):
@@ -402,7 +485,7 @@ def main():
     def signal_handler(sig, frame):
         logger.info("Received interrupt signal. Stopping service...")
         if 'vcam' in locals():
-            vcam.stop()
+            vcam.cleanup()
         if 'stream' in locals():
             stream.stop()
         exit(0)
@@ -465,7 +548,7 @@ def main():
         if 'stream' in locals():
             stream.stop()
         if 'vcam' in locals():
-            vcam.stop()
+            vcam.cleanup()
         if device_uuid and id_token:
             update_streaming_status(device_uuid, id_token, False)
 
