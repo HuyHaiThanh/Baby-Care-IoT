@@ -6,7 +6,8 @@ import time
 import subprocess
 import threading
 import logging
-import re
+import signal
+import sys
 
 # Thiết lập logging
 logging.basicConfig(
@@ -15,523 +16,219 @@ logging.basicConfig(
 )
 logger = logging.getLogger('virtual_camera')
 
-def find_available_camera_devices():
-    """Tìm các thiết bị camera vật lý có sẵn và hoạt động"""
-    available_devices = []
-    
-    # Ưu tiên kiểm tra /dev/video0 trước vì thường là thiết bị camera chính
-    if os.path.exists("/dev/video0"):
+class VirtualCamera:
+    def __init__(self, input_device="/dev/video0", output_device="/dev/video17"):
+        self.input_device = input_device
+        self.output_device = output_device
+        self.ffmpeg_process = None
+        self.running = False
+        
+    def cleanup_devices(self):
+        """Dọn dẹp các thiết bị video đang được sử dụng"""
+        logger.info("Dọn dẹp các thiết bị video...")
         try:
-            # Thử capture một frame từ thiết bị để xác nhận nó hoạt động
+            # Kill các process đang sử dụng thiết bị
+            subprocess.run([
+                "sudo", "fuser", "-k", 
+                self.input_device, self.output_device
+            ], capture_output=True)
+            time.sleep(1)
+        except Exception as e:
+            logger.warning(f"Lỗi khi dọn dẹp thiết bị: {e}")
+
+    def check_input_device(self):
+        """Kiểm tra thiết bị camera đầu vào"""
+        if not os.path.exists(self.input_device):
+            logger.error(f"Thiết bị camera {self.input_device} không tồn tại!")
+            return False
+            
+        try:
+            # Test camera với ffmpeg
             test_cmd = [
-                "ffmpeg", "-f", "v4l2", "-hide_banner", "-t", "0.1", 
-                "-i", "/dev/video0", "-frames:v", "1", "-f", "null", "-"
+                "ffmpeg", "-f", "v4l2", "-hide_banner", "-t", "0.1",
+                "-i", self.input_device, "-frames:v", "1", "-f", "null", "-"
             ]
-            test_process = subprocess.run(
+            result = subprocess.run(
                 test_cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
-                timeout=2
+                timeout=5
             )
             
-            if test_process.returncode == 0 or "Immediate exit requested" in test_process.stderr.decode():
-                logger.info(f"Tìm thấy thiết bị camera hoạt động: /dev/video0")
-                return ["/dev/video0"]  # Trả về ngay thiết bị đầu tiên hoạt động
-        except Exception as e:
-            logger.warning(f"Lỗi khi kiểm tra /dev/video0: {str(e)}")
-    
-    # Kiểm tra các thiết bị camera theo thứ tự
-    # VIDEO_DEVICE_ID được sắp xếp để ưu tiên các thiết bị thấp trước
-    for i in range(10):  # Chỉ kiểm tra video0-video9 (thiết bị phổ biến nhất)
-        device = f"/dev/video{i}"
-        if device == "/dev/video0":  # Đã kiểm tra ở trên
-            continue
-            
-        if os.path.exists(device):
-            try:
-                # Kiểm tra xác định đây có phải là thiết bị capture thật không
-                test_cmd = [
-                    "v4l2-ctl", "--device", device, "--all"
-                ]
-                test_process = subprocess.run(
-                    test_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=2
-                )
+            if result.returncode == 0 or "Immediate exit requested" in result.stderr.decode():
+                logger.info(f"Camera {self.input_device} hoạt động bình thường")
+                return True
+            else:
+                logger.error(f"Camera {self.input_device} không hoạt động")
+                return False
                 
-                # Tìm các dấu hiệu đây là camera thật
-                output = test_process.stdout.decode()
-                if "Format Video Capture" in output and "loopback" not in output:
-                    # Thử capture một frame để xác nhận hoạt động
-                    capture_cmd = [
-                        "ffmpeg", "-f", "v4l2", "-hide_banner", "-t", "0.1", 
-                        "-i", device, "-frames:v", "1", "-f", "null", "-"
-                    ]
-                    
-                    try:
-                        capture_process = subprocess.run(
-                            capture_cmd,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.PIPE,
-                            timeout=2
-                        )
-                        
-                        if capture_process.returncode == 0 or "Immediate exit requested" in capture_process.stderr.decode():
-                            logger.info(f"Tìm thấy thiết bị camera hoạt động: {device}")
-                            return [device]  # Trả về ngay thiết bị hoạt động
-                    except Exception as e:
-                        logger.debug(f"Không thể capture từ {device}: {str(e)}")
-            except Exception as e:
-                logger.debug(f"Lỗi khi kiểm tra {device}: {str(e)}")
-    
-    # Nếu không tìm thấy thiết bị camera tiêu chuẩn, thử các thiết bị khác
-    try:
-        # Liệt kê tất cả các thiết bị video
-        cmd = ["ls", "-l", "/dev/video*"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            # Tìm tất cả các đường dẫn thiết bị
-            device_paths = re.findall(r'/dev/video\d+', result.stdout)
-            
-            for device in device_paths:
-                if device not in ["/dev/video0"] + [f"/dev/video{i}" for i in range(1, 10)]:  # Bỏ qua các thiết bị đã kiểm tra
-                    try:
-                        # Kiểm tra nhanh
-                        test_cmd = [
-                            "ffmpeg", "-f", "v4l2", "-hide_banner", "-t", "0.1", 
-                            "-i", device, "-frames:v", "1", "-f", "null", "-"
-                        ]
-                        test_process = subprocess.run(
-                            test_cmd, 
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.PIPE,
-                            timeout=2
-                        )
-                        
-                        if test_process.returncode == 0 or "Immediate exit requested" in test_process.stderr.decode():
-                            logger.info(f"Tìm thấy thiết bị camera hoạt động: {device}")
-                            return [device]
-                    except Exception:
-                        continue
-    except Exception as e:
-        logger.error(f"Lỗi khi tìm thiết bị camera: {str(e)}")
-    
-    logger.warning("Không tìm thấy thiết bị camera hoạt động")
-    
-    # Trả về một thiết bị camera mặc định nếu không tìm thấy thiết bị hoạt động
-    if os.path.exists("/dev/video0"):
-        return ["/dev/video0"]
-    return []
+        except Exception as e:
+            logger.error(f"Lỗi kiểm tra camera: {e}")
+            return False
 
-class VirtualCameraManager:
-    def __init__(self, physical_device="/dev/video0", virtual_device="/dev/video10"):
-        """
-        Khởi tạo quản lý camera ảo
-        
-        Args:
-            physical_device: Thiết bị camera vật lý
-            virtual_device: Thiết bị camera ảo sẽ được tạo
-        """
-        # Tìm thiết bị camera khả dụng nếu thiết bị được chỉ định không tồn tại
-        self.physical_device = physical_device
-        if not os.path.exists(physical_device):
-            available_cameras = find_available_camera_devices()
-            if available_cameras:
-                self.physical_device = available_cameras[0]
-                logger.info(f"Thiết bị camera vật lý được chỉ định không tồn tại. Chuyển sang thiết bị: {self.physical_device}")
-            else:
-                logger.warning(f"Không tìm thấy thiết bị camera nào khả dụng. Vẫn giữ nguyên thiết bị: {self.physical_device}")
-        
-        self.virtual_device = virtual_device  # Thiết bị ảo mặc định
-        self.v4l2_process = None
-        self.copy_completed = False
-        self.device_freed = False
-        self.virtual_device_created = False
-    
-    def check_v4l2loopback_installed(self):
-        """Kiểm tra xem v4l2loopback đã được cài đặt chưa"""
+    def create_virtual_device(self):
+        """Tạo thiết bị camera ảo bằng v4l2loopback"""
         try:
-            # Kiểm tra xem module có sẵn sàng để nạp không
-            check_available = subprocess.run(["modinfo", "v4l2loopback"], 
-                                          capture_output=True, text=True)
-            if check_available.returncode == 0:
-                return True
-                
-            # Nếu không có sẵn, kiểm tra xem gói có được cài đặt không
-            check_installed = subprocess.run(["dpkg", "-s", "v4l2loopback-dkms"], 
-                                         capture_output=True, text=True)
-            if check_installed.returncode == 0:
-                return True
-                
-            # Cố gắng cài đặt
-            logger.warning("v4l2loopback chưa được cài đặt. Cố gắng cài đặt...")
-            subprocess.run(["sudo", "apt-get", "update", "-y"], capture_output=True)
-            install_result = subprocess.run(["sudo", "apt-get", "install", "-y", "v4l2loopback-dkms", "v4l2loopback-utils"], 
-                                         capture_output=True, text=True)
+            # Kiểm tra xem module v4l2loopback đã được tải chưa
+            result = subprocess.run(
+                ["lsmod"], 
+                capture_output=True, 
+                text=True
+            )
             
-            if install_result.returncode == 0:
-                logger.info("Đã cài đặt v4l2loopback thành công")
+            if "v4l2loopback" not in result.stdout:
+                logger.info("Tải module v4l2loopback...")
+                subprocess.run([
+                    "sudo", "modprobe", "v4l2loopback", 
+                    "video_nr=17", "card_label=Virtual Camera"
+                ], check=True)
+                time.sleep(2)
+            
+            # Kiểm tra thiết bị ảo đã được tạo chưa
+            if os.path.exists(self.output_device):
+                logger.info(f"Thiết bị ảo {self.output_device} đã sẵn sàng")
                 return True
             else:
-                logger.error(f"Không thể cài đặt v4l2loopback: {install_result.stderr}")
+                logger.error(f"Không thể tạo thiết bị ảo {self.output_device}")
                 return False
+                
         except Exception as e:
-            logger.error(f"Lỗi khi kiểm tra v4l2loopback: {str(e)}")
+            logger.error(f"Lỗi tạo thiết bị ảo: {e}")
             return False
-    
-    def find_available_video_device(self):
-        """Tìm một số thiết bị virtual video khả dụng"""
-        for i in range(10, 30):  # Thử từ video10 đến video29
-            device_path = f"/dev/video{i}"
-            if not os.path.exists(device_path):
-                return device_path, i
-        return "/dev/video10", 10  # Mặc định nếu không tìm thấy
-    
-    def cleanup_existing_devices(self):
-        """Dọn dẹp các thiết bị video ảo đang tồn tại"""
-        try:
-            # Tắt module v4l2loopback nếu đang chạy
-            logger.info("Đang dọn dẹp các thiết bị video ảo hiện có...")
-            subprocess.run(["sudo", "modprobe", "-r", "v4l2loopback"], 
-                          capture_output=True, text=True)
-            time.sleep(2)
-            return True
-        except Exception as e:
-            logger.error(f"Lỗi khi dọn dẹp thiết bị ảo: {str(e)}")
+
+    def start_streaming(self):
+        """Bắt đầu streaming từ camera thật sang camera ảo"""
+        if self.running:
+            logger.warning("Streaming đã đang chạy")
             return False
-            
-    def setup_virtual_camera(self):
-        """
-        Thiết lập v4l2loopback để tạo thiết bị camera ảo
+
+        logger.info(f"Bắt đầu streaming từ {self.input_device} sang {self.output_device}")
         
-        Returns:
-            bool: True nếu thành công, False nếu thất bại
-        """
-        try:
-            # Kiểm tra xem v4l2loopback đã được cài đặt chưa
-            if not self.check_v4l2loopback_installed():
-                logger.error("v4l2loopback không được cài đặt. Không thể tạo thiết bị camera ảo.")
-                return False
-            
-            # Dọn dẹp các thiết bị cũ trước
-            self.cleanup_existing_devices()
-                        
-            # Tìm một thiết bị khả dụng
-            self.virtual_device, device_number = self.find_available_video_device()
-            logger.info(f"Sử dụng thiết bị ảo: {self.virtual_device}")
-            
-            # Nạp module v4l2loopback với các tùy chọn đơn giản hơn cho Raspberry Pi 2B
-            logger.info("Đang nạp module v4l2loopback...")
-            # Sử dụng syntax đơn giản hơn cho Raspberry Pi 2B
-            cmd = [
-                "sudo", "modprobe", "v4l2loopback",
-                f"video_nr={device_number}",
-                "exclusive_caps=0",
-                "card_label=VirtualCam"  # Không sử dụng dấu nháy kép để tránh sự cố
-            ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                logger.error(f"Không thể nạp module v4l2loopback: {result.stderr}")
-                # Thử cách khác với ít tham số hơn
-                simple_cmd = ["sudo", "modprobe", "v4l2loopback"]
-                simple_result = subprocess.run(simple_cmd, capture_output=True, text=True)
-                if simple_result.returncode != 0:
-                    logger.error(f"Không thể nạp module v4l2loopback đơn giản: {simple_result.stderr}")
-                    return False
-                logger.info("Đã nạp module v4l2loopback thành công với cách đơn giản")
-                
-            time.sleep(3)  # Đợi module được nạp
-            
-            # Kiểm tra xem thiết bị đã được tạo chưa
-            if os.path.exists(self.virtual_device):
-                self.virtual_device_created = True
-                logger.info(f"Thiết bị ảo {self.virtual_device} đã được tạo thành công")
-                return True
-            else:
-                # Nếu thiết bị không tồn tại, thử tìm một thiết bị khác đã được tạo
-                logger.warning(f"Thiết bị ảo {self.virtual_device} không tồn tại. Đang tìm thiết bị v4l2loopback khác...")
-                
-                # Thử kiểm tra tất cả các thiết bị video từ 0-20
-                for i in range(20):
-                    test_device = f"/dev/video{i}"
-                    if os.path.exists(test_device):
-                        try:
-                            # Kiểm tra xem thiết bị có phải là v4l2loopback không
-                            device_info = subprocess.run(["v4l2-ctl", "-d", test_device, "--info"], 
-                                                    capture_output=True, text=True, timeout=2)
-                            
-                            if "v4l2loopback" in device_info.stdout or "loopback" in device_info.stdout:
-                                self.virtual_device = test_device
-                                self.virtual_device_created = True
-                                logger.info(f"Tìm thấy thiết bị v4l2loopback: {test_device}")
-                                return True
-                        except Exception:
-                            continue
-            
-            logger.error("Không tìm thấy thiết bị v4l2loopback nào")
-            return False
-            
-        except Exception as e:
-            logger.error(f"Lỗi khi thiết lập v4l2loopback: {str(e)}")
-            return False
-    
-    def free_physical_device(self):
-        """
-        Giải phóng thiết bị camera vật lý để các tiến trình khác có thể sử dụng
-        """
-        if self.copy_completed and not self.device_freed:
-            logger.info(f"Đang giải phóng thiết bị vật lý {self.physical_device}...")
-            
-            if self.v4l2_process:
-                logger.info("Dừng tiến trình sao chép video để giải phóng thiết bị vật lý")
-                self.v4l2_process.terminate()
-                try:
-                    self.v4l2_process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.v4l2_process.kill()
-                self.v4l2_process = None
-            
-            # Giải phóng thiết bị vật lý nếu có tiến trình nào đang sử dụng
-            try:
-                check_busy = subprocess.run(["fuser", "-v", self.physical_device], 
-                                          capture_output=True, text=True)
-                
-                if check_busy.returncode == 0:  # Có tiến trình đang sử dụng
-                    subprocess.run(["sudo", "fuser", "-k", self.physical_device], 
-                                 capture_output=True, text=True)
-                    time.sleep(1)
-            except Exception as e:
-                logger.error(f"Lỗi khi giải phóng thiết bị: {str(e)}")
-            
-            self.device_freed = True
-            logger.info(f"Thiết bị vật lý {self.physical_device} đã được giải phóng")
-    
-    def start_video_copying(self):
-        """
-        Bắt đầu sao chép luồng video từ thiết bị thật sang thiết bị ảo
-        
-        Returns:
-            bool: True nếu thành công, False nếu thất bại
-        """
-        if not self.virtual_device_created:
-            logger.warning("Không thể sao chép video vì thiết bị ảo không tồn tại")
-            return False
-            
-        if self.v4l2_process:
-            return True
-            
-        logger.info(f"Bắt đầu sao chép video từ {self.physical_device} sang {self.virtual_device}")
+        # Command FFmpeg để stream từ USB camera sang virtual camera
+        ffmpeg_cmd = [
+            "sudo", "ffmpeg",
+            "-f", "v4l2",
+            "-input_format", "mjpeg",
+            "-video_size", "640x480",
+            "-framerate", "30",
+            "-i", self.input_device,
+            "-c:v", "mjpeg",
+            "-f", "v4l2",
+            self.output_device
+        ]
         
         try:
-            # Kiểm tra xem có tiến trình nào đang sử dụng camera không
-            try:
-                check_busy = subprocess.run(["fuser", "-v", self.physical_device], 
-                                        capture_output=True, text=True)
-                
-                if check_busy.returncode == 0:  # Có tiến trình đang sử dụng
-                    logger.warning(f"Camera {self.physical_device} đang được sử dụng bởi tiến trình khác. Thử giải phóng...")
-                    subprocess.run(["sudo", "fuser", "-k", self.physical_device], 
-                                capture_output=True, text=True)
-                    time.sleep(2)  # Đợi giải phóng thiết bị
-            except Exception:
-                pass  # Bỏ qua nếu không có công cụ fuser
-            
-            # Sử dụng ffmpeg để sao chép từ camera thực sang thiết bị ảo
-            # Tránh chỉ định input_format để ffmpeg tự phát hiện định dạng tốt nhất
-            command = [
-                "ffmpeg", 
-                "-f", "v4l2", 
-                "-i", self.physical_device,
-                "-vcodec", "copy",  # Sao chép mã hóa để giữ chất lượng và hiệu suất
-                "-f", "v4l2", 
-                self.virtual_device
-            ]
-            
-            logger.info("Sử dụng lệnh sao chép: " + " ".join(command))
-            
-            self.v4l2_process = subprocess.Popen(
-                command, 
+            logger.info(f"Chạy lệnh: {' '.join(ffmpeg_cmd)}")
+            self.ffmpeg_process = subprocess.Popen(
+                ffmpeg_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
             )
             
-            time.sleep(3)  # Đợi để ffmpeg thiết lập đầy đủ
-            
-            if self.v4l2_process.poll() is not None:
-                # Nếu process đã kết thúc, có lỗi
-                stdout, stderr = self.v4l2_process.communicate()
-                logger.error(f"Không thể sao chép video: {stderr.decode()}")
-                self.v4l2_process = None
-                
-                # Thử phương pháp sao chép thay thế
-                return self.start_video_copying_alternative()
-            
-            # Thiết lập cờ copy_completed
-            self.copy_completed = True
-            # Chạy một thread để giải phóng thiết bị vật lý sau 5 giây
-            threading.Timer(5.0, self.free_physical_device).start()
-                
-            logger.info("Video đang được sao chép thành công")
+            self.running = True
+            logger.info("Virtual camera đã bắt đầu streaming")
             return True
             
         except Exception as e:
-            logger.error(f"Lỗi khi bắt đầu sao chép video: {str(e)}")
-            if self.v4l2_process:
-                self.v4l2_process.terminate()
-                self.v4l2_process = None
+            logger.error(f"Lỗi khởi động FFmpeg: {e}")
             return False
 
-    def start_video_copying_alternative(self):
-        """
-        Phương pháp thay thế để sao chép video sang thiết bị ảo
+    def stop_streaming(self):
+        """Dừng streaming"""
+        if not self.running:
+            return
+            
+        logger.info("Đang dừng virtual camera...")
+        self.running = False
         
-        Returns:
-            bool: True nếu thành công, False nếu thất bại
-        """
-        logger.info("Thử phương pháp thay thế để sao chép video...")
-        
-        try:
-            # Sử dụng GStreamer thay vì ffmpeg
-            command = [
-                "gst-launch-1.0", "-v",
-                f"v4l2src device={self.physical_device} ! videoconvert ! v4l2sink device={self.virtual_device}"
-            ]
-            
-            self.v4l2_process = subprocess.Popen(
-                " ".join(command),
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            
-            time.sleep(3)
-            
-            if self.v4l2_process.poll() is not None:
-                # Nếu process đã kết thúc, có lỗi
-                stdout, stderr = self.v4l2_process.communicate()
-                logger.error(f"Phương pháp sao chép thay thế cũng thất bại: {stderr.decode()}")
-                self.v4l2_process = None
-                return False
-            
-            self.copy_completed = True
-            threading.Timer(5.0, self.free_physical_device).start()
-            
-            logger.info("Video đang được sao chép thành công với phương pháp thay thế")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Lỗi khi sử dụng phương pháp sao chép thay thế: {str(e)}")
-            if self.v4l2_process:
-                self.v4l2_process.terminate()
-                self.v4l2_process = None
-            return False
-    
-    def stop_video_copying(self):
-        """Dừng quá trình sao chép video"""
-        if self.v4l2_process:
-            logger.info("Đang dừng quá trình sao chép video...")
-            self.v4l2_process.terminate()
+        if self.ffmpeg_process:
             try:
-                self.v4l2_process.wait(timeout=5)
+                self.ffmpeg_process.terminate()
+                # Chờ process kết thúc
+                self.ffmpeg_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self.v4l2_process.kill()
-            self.v4l2_process = None
-    
-    def start(self):
-        """
-        Khởi động quản lý camera ảo
+                logger.warning("FFmpeg không dừng được, kill process")
+                self.ffmpeg_process.kill()
+            except Exception as e:
+                logger.error(f"Lỗi dừng FFmpeg: {e}")
+            finally:
+                self.ffmpeg_process = None
         
-        Returns:
-            tuple: (bool, str) - (thành công/thất bại, thiết bị sử dụng)
-        """
-        # Thiết lập camera ảo
-        v4l2_setup_success = self.setup_virtual_camera()
-        
-        # Sao chép video từ thiết bị vật lý sang thiết bị ảo
-        if v4l2_setup_success:
-            if self.start_video_copying():
-                logger.info("Sao chép video thành công từ camera thật sang thiết bị ảo")
-                return True, self.virtual_device
-            else:
-                logger.warning("Không thể sao chép video sang thiết bị ảo, sử dụng thiết bị gốc")
-                return False, self.physical_device
-        else:
-            logger.warning("Không thể thiết lập thiết bị ảo, sử dụng thiết bị gốc")
-            return False, self.physical_device
-    
-    def stop(self):
-        """Dừng camera ảo và dọn dẹp tài nguyên"""
-        self.stop_video_copying()
-        
-        # Cố gắng tắt module v4l2loopback
-        try:
-            subprocess.run(["sudo", "modprobe", "-r", "v4l2loopback"], 
-                          capture_output=True, text=True)
-        except Exception:
-            pass
-        
-        logger.info("Đã dừng quản lý camera ảo")
+        # Dọn dẹp thiết bị
+        self.cleanup_devices()
+        logger.info("Virtual camera đã dừng")
+
+    def monitor_process(self):
+        """Monitor FFmpeg process"""
+        if not self.ffmpeg_process:
+            return
+            
+        while self.running and self.ffmpeg_process.poll() is None:
+            time.sleep(1)
+            
+        # Nếu process kết thúc bất ngờ
+        if self.running and self.ffmpeg_process.poll() is not None:
+            logger.error("FFmpeg process kết thúc bất ngờ")
+            self.running = False
+
+def signal_handler(signum, frame):
+    """Xử lý tín hiệu dừng chương trình"""
+    global virtual_camera
+    logger.info("Nhận tín hiệu dừng, đang dọn dẹp...")
+    if virtual_camera:
+        virtual_camera.stop_streaming()
+    sys.exit(0)
 
 def main():
-    """
-    Hàm chính để kiểm tra chức năng tạo camera ảo
-    """
-    import argparse
+    global virtual_camera
     
-    parser = argparse.ArgumentParser(description='Quản lý thiết bị camera ảo')
-    parser.add_argument('--physical-device', help='Thiết bị camera vật lý')
-    parser.add_argument('--virtual-device', help='Thiết bị camera ảo')
-    parser.add_argument('--cleanup', action='store_true', help='Dọn dẹp các thiết bị ảo hiện có')
+    # Đăng ký signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
-    args = parser.parse_args()
-    
-    if args.cleanup:
-        # Nếu chỉ cần dọn dẹp
-        try:
-            subprocess.run(["sudo", "modprobe", "-r", "v4l2loopback"], 
-                          capture_output=True, text=True)
-            logger.info("Đã dọn dẹp các thiết bị camera ảo")
-            return
-        except Exception as e:
-            logger.error(f"Lỗi khi dọn dẹp: {e}")
-            return
-    
-    physical_device = args.physical_device
-    if not physical_device:
-        # Tự động tìm thiết bị camera nếu không được chỉ định
-        devices = find_available_camera_devices()
-        if devices:
-            physical_device = devices[0]
-            logger.info(f"Tự động phát hiện camera: {physical_device}")
-        else:
-            physical_device = '/dev/video0'
-            logger.warning(f"Không tìm thấy camera. Sử dụng mặc định: {physical_device}")
-    
-    # Khởi tạo quản lý camera ảo
-    manager = VirtualCameraManager(physical_device=physical_device, virtual_device=args.virtual_device)
+    # Khởi tạo virtual camera
+    virtual_camera = VirtualCamera()
     
     try:
-        # Khởi động
-        success, device = manager.start()
+        # Bước 1: Dọn dẹp thiết bị
+        virtual_camera.cleanup_devices()
         
-        if success:
-            logger.info(f"Camera ảo đã được khởi tạo thành công. Thiết bị: {device}")
-            logger.info("Nhấn Ctrl+C để dừng")
-            # Giữ cho chương trình chạy
-            while True:
-                time.sleep(1)
-        else:
-            logger.info(f"Không thể khởi tạo camera ảo. Sử dụng thiết bị gốc: {device}")
-    
+        # Bước 2: Kiểm tra camera đầu vào
+        if not virtual_camera.check_input_device():
+            logger.error("Không thể sử dụng camera đầu vào!")
+            return 1
+        
+        # Bước 3: Tạo thiết bị ảo
+        if not virtual_camera.create_virtual_device():
+            logger.error("Không thể tạo thiết bị camera ảo!")
+            return 1
+        
+        # Bước 4: Bắt đầu streaming
+        if not virtual_camera.start_streaming():
+            logger.error("Không thể bắt đầu streaming!")
+            return 1
+        
+        # Bước 5: Monitor process
+        logger.info("Virtual camera đang chạy. Nhấn Ctrl+C để dừng.")
+        
+        # Tạo thread để monitor FFmpeg process
+        monitor_thread = threading.Thread(target=virtual_camera.monitor_process)
+        monitor_thread.daemon = True
+        monitor_thread.start()
+        
+        # Chờ cho đến khi bị dừng
+        while virtual_camera.running:
+            time.sleep(1)
+            
     except KeyboardInterrupt:
-        logger.info("Đã nhận ngắt từ bàn phím.")
+        logger.info("Nhận Ctrl+C, đang dừng...")
+    except Exception as e:
+        logger.error(f"Lỗi chương trình: {e}")
     finally:
-        # Dừng camera ảo
-        manager.stop()
+        virtual_camera.stop_streaming()
+    
+    return 0
 
 if __name__ == "__main__":
-    main()
+    exit_code = main()
+    sys.exit(exit_code)
