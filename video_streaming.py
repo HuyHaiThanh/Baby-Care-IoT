@@ -130,17 +130,30 @@ class VirtualCameraManager:
             "-i", self.physical_device,
             "-c:v", "mjpeg",
             "-f", "v4l2",
-            self.virtual_device
+            self.virtual_device,
+            "-loglevel", "debug"
         ]
         logger.info("Start copying video from physical to virtual device")
+        logger.info(f"FFmpeg command: {' '.join(command)}")
         self.ffmpeg_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        time.sleep(5)
+        
+        # Đợi lâu hơn để đảm bảo ffmpeg copy ổn định
+        logger.info("Waiting for ffmpeg copy to stabilize...")
+        time.sleep(10)
+        
         if self.ffmpeg_process.poll() is not None:
             _, err = self.ffmpeg_process.communicate()
             logger.error(f"ffmpeg copy process failed: {err}")
             self.ffmpeg_process = None
             return False
-        logger.info("ffmpeg copy process started")
+        
+        # Kiểm tra virtual device có hoạt động không
+        if not os.path.exists(self.virtual_device):
+            logger.error(f"Virtual device {self.virtual_device} was not created")
+            self.stop_copying()
+            return False
+            
+        logger.info("ffmpeg copy process started and stabilized")
         return True
 
     def stop_copying(self):
@@ -184,9 +197,52 @@ class VideoStreamManager:
         except Exception as e:
             logger.error(f"Error cleaning HLS files: {e}")
 
+    def check_device_format(self, device):
+        """Kiểm tra format và khả năng của thiết bị video"""
+        try:
+            logger.info(f"Checking device formats for {device}")
+            result = subprocess.run(["v4l2-ctl", "--device", device, "--list-formats-ext"], 
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                logger.info(f"Device {device} formats:\n{result.stdout}")
+                # Kiểm tra xem có MJPEG format không
+                if "MJPG" in result.stdout or "Motion-JPEG" in result.stdout:
+                    logger.info(f"Device {device} supports MJPEG format")
+                    return True
+                else:
+                    logger.warning(f"Device {device} may not support MJPEG format")
+                    return False
+            else:
+                logger.error(f"Cannot check formats for device {device}: {result.stderr}")
+                return False
+        except Exception as e:
+            logger.error(f"Error checking device format: {e}")
+            return False
+
+    def wait_for_device_ready(self, device, max_wait=15):
+        """Đợi thiết bị sẵn sàng với format phù hợp"""
+        logger.info(f"Waiting for device {device} to be ready...")
+        for i in range(max_wait):
+            if os.path.exists(device):
+                if self.check_device_format(device):
+                    logger.info(f"Device {device} is ready after {i+1} seconds")
+                    return True
+                time.sleep(1)
+            else:
+                logger.info(f"Device {device} does not exist yet, waiting...")
+                time.sleep(1)
+        logger.error(f"Device {device} not ready after {max_wait} seconds")
+        return False
+
     def start_streaming(self, source_device):
         subprocess.run(["sudo", "fuser", "-k", source_device], capture_output=True)
         time.sleep(2)
+        
+        # Kiểm tra thiết bị sẵn sàng trước khi streaming
+        if not self.wait_for_device_ready(source_device):
+            logger.error(f"Device {source_device} is not ready for streaming")
+            return False
+        
         os.makedirs(HLS_OUTPUT_DIR, exist_ok=True)
         subprocess.run(["sudo", "chown", "-R", "www-data:www-data", HLS_OUTPUT_DIR], check=True)
         subprocess.run(["sudo", "chmod", "-R", "775", HLS_OUTPUT_DIR], check=True)
