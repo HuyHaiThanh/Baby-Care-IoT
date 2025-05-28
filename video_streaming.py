@@ -191,6 +191,14 @@ class VideoStreamManager:
         subprocess.run(["sudo", "chown", "-R", "www-data:www-data", HLS_OUTPUT_DIR], check=True)
         subprocess.run(["sudo", "chmod", "-R", "775", HLS_OUTPUT_DIR], check=True)
         self.clean_hls_files()
+        
+        # Tạo file playlist trống để đảm bảo quyền ghi
+        try:
+            subprocess.run(["sudo", "touch", f"{HLS_OUTPUT_DIR}/playlist.m3u8"], check=True)
+            subprocess.run(["sudo", "chown", "www-data:www-data", f"{HLS_OUTPUT_DIR}/playlist.m3u8"], check=True)
+            subprocess.run(["sudo", "chmod", "664", f"{HLS_OUTPUT_DIR}/playlist.m3u8"], check=True)
+        except Exception as e:
+            logger.warning(f"Could not create initial playlist file: {e}")
 
         command = [
             "sudo", "-u", "www-data", "gst-launch-1.0", "-v",
