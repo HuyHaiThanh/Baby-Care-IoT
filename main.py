@@ -8,19 +8,30 @@ import sys
 import argparse
 import traceback
 
-# Thêm log file để theo dõi quá trình khởi động
-print("=== STARTING UP - INITIAL DIAGNOSTICS ===")
-print(f"Python version: {sys.version}")
-print(f"Current working directory: {os.getcwd()}")
-print("Checking for required directories...")
+# Firebase device management
+device_uuid = None
+id_token = None
+
+# Flag để xác định chế độ debug và quiet sớm
+debug_mode = '--debug' in sys.argv
+quiet_mode = '--quiet' in sys.argv
+
+# Chỉ hiển thị log khởi động khi ở chế độ debug và không ở chế độ quiet
+if debug_mode and not quiet_mode:
+    print("=== STARTING UP - INITIAL DIAGNOSTICS ===")
+    print(f"Python version: {sys.version}")
+    print(f"Current working directory: {os.getcwd()}")
+    print("Checking for required directories...")
 
 # Check and handle NumPy/SciPy errors
 try:
     import numpy as np
-    print("NumPy imported successfully")
+    if debug_mode and not quiet_mode:
+        print("NumPy imported successfully")
     try:
         import scipy.signal
-        print("SciPy imported successfully")
+        if debug_mode and not quiet_mode:
+            print("SciPy imported successfully")
     except ImportError:
         print("\n❌ Error: NumPy and SciPy versions are incompatible!")
         print("Please reinstall the libraries with compatible versions:")
@@ -38,10 +49,12 @@ except ImportError:
     sys.exit(1)
 
 # Import các module cần thiết
-print("Importing modules...")
+if debug_mode and not quiet_mode:
+    print("Importing modules...")
 try:
     from src.utils import logger, set_debug_mode
-    print("✓ utils imported")
+    if debug_mode and not quiet_mode:
+        print("✓ utils imported")
 except ImportError as e:
     print(f"❌ Error importing utils: {e}")
     traceback.print_exc()
@@ -49,37 +62,57 @@ except ImportError as e:
 
 try:
     from src.clients import AudioRecorder
-    print("✓ audio_client imported")
+    if debug_mode and not quiet_mode:
+        print("✓ audio_client imported")
 except ImportError as e:
     print(f"❌ Error importing audio_client: {e}")
     traceback.print_exc()
 
 try:
     from src.clients import CameraClient
-    print("✓ camera_client imported")
+    if debug_mode and not quiet_mode:
+        print("✓ camera_client imported")
 except ImportError as e:
     print(f"❌ Error importing camera_client: {e}")
     traceback.print_exc()
 
 try:
     from src.core.config import IMAGE_SERVER_URL, AUDIO_SERVER_URL
-    print(f"✓ Server URLs loaded: ")
-    print(f"  - Image server: {IMAGE_SERVER_URL}")
-    print(f"  - Audio server: {AUDIO_SERVER_URL}")
+    if debug_mode and not quiet_mode:
+        print(f"✓ Server URLs loaded: ")
+        print(f"  - Image server: {IMAGE_SERVER_URL}")
+        print(f"  - Audio server: {AUDIO_SERVER_URL}")
 except ImportError as e:
     print(f"❌ Error importing config: {e}")
     traceback.print_exc()
 
+try:
+    from src.services.firebase_device_manager import initialize_device, update_streaming_status
+    if debug_mode and not quiet_mode:
+        print("✓ Firebase device manager imported")
+except ImportError as e:
+    print(f"❌ Error importing firebase_device_manager: {e}")
+    traceback.print_exc()
+
 # Flag để kiểm soát kết thúc chương trình
 running = True
-# Flag để xác định chế độ debug
-debug_mode = False
 
 def signal_handler(sig, frame):
     """Handle system shutdown signals."""
-    global running
-    print("\nStopping system...")
+    global running, device_uuid, id_token
+    if not quiet_mode:
+        print("\nStopping system...")
     running = False
+    
+    # Cập nhật trạng thái Firebase offline khi nhận tín hiệu dừng
+    if device_uuid and id_token:
+        try:
+            update_streaming_status(device_uuid, id_token, is_online=False)
+            if debug_mode and not quiet_mode:
+                print("✓ Firebase status updated to OFFLINE")
+        except Exception as e:
+            if debug_mode and not quiet_mode:
+                print(f"⚠ Error updating Firebase offline status: {e}")
 
 def parse_arguments():
     """Process command line arguments"""
@@ -95,7 +128,9 @@ def parse_arguments():
     display_group = parser.add_argument_group('Tùy chọn hiển thị')
     display_group.add_argument('--simple-display', action='store_true', help='Sử dụng chế độ hiển thị đơn giản (tương thích tốt hơn)')
     display_group.add_argument('--debug', action='store_true', help='Hiển thị thông tin log và chi tiết lỗi')
-      # Nhóm tùy chọn server
+    display_group.add_argument('--quiet', action='store_true', help='Chế độ im lặng - chỉ hiển thị giao diện trạng thái, ẩn log khởi động')
+    
+    # Nhóm tùy chọn server
     server_group = parser.add_argument_group('Cấu hình kết nối server')
     server_group.add_argument('--image-server', help='Địa chỉ server hình ảnh (IP:port hoặc hostname:port)')
     server_group.add_argument('--audio-server', help='Địa chỉ server âm thanh (IP:port hoặc hostname:port)')
@@ -108,7 +143,7 @@ def parse_arguments():
 
 def main():
     """Main function to start the program"""
-    global debug_mode
+    global debug_mode, device_uuid, id_token, quiet_mode
     
     # Đăng ký handler cho tín hiệu dừng chương trình
     signal.signal(signal.SIGINT, signal_handler)
@@ -117,25 +152,48 @@ def main():
     # Xử lý tham số dòng lệnh
     args = parse_arguments()
     
+    # Cập nhật chế độ quiet từ args
+    quiet_mode = args.quiet
+    
     # Cấu hình chế độ hiển thị log - mặc định tắt, chỉ bật khi có --debug
     try:
         if args.debug:
-            print("\n>> Đang chuyển sang chế độ debug (hiển thị log)")
+            if debug_mode and not quiet_mode:
+                print("\n>> Đang chuyển sang chế độ debug (hiển thị log)")
             set_debug_mode(True)
             debug_mode = True
         else:
             set_debug_mode(False)
             debug_mode = False
     except Exception as e:
-        print(f"Lỗi khi cấu hình chế độ hiển thị log: {e}")
+        if not quiet_mode:
+            print(f"Lỗi khi cấu hình chế độ hiển thị log: {e}")
+    
+    # Khởi tạo thiết bị Firebase
+    if debug_mode and not quiet_mode:
+        print("\n>> Khởi tạo thiết bị Firebase...")
+    try:
+        device_uuid, id_token = initialize_device(start_ngrok_if_needed=False)
+        if device_uuid and id_token:
+            if debug_mode and not quiet_mode:
+                print(f"✓ Firebase device initialized: {device_uuid}")
+        else:
+            if debug_mode and not quiet_mode:
+                print("⚠ Firebase device initialization failed - continuing without Firebase")
+    except Exception as e:
+        if debug_mode and not quiet_mode:
+            print(f"⚠ Firebase initialization error: {e}")
+        device_uuid = None
+        id_token = None
     
     # System start time
     start_time = time.time()
     
-    # Print startup information
-    print("\n" + "=" * 60)
-    print("BABY MONITORING SYSTEM - Raspberry Pi Client")
-    print("=" * 60)
+    # Print startup information - chỉ khi debug và không quiet
+    if debug_mode and not quiet_mode:
+        print("\n" + "=" * 60)
+        print("BABY MONITORING SYSTEM - Raspberry Pi Client")
+        print("=" * 60)
     
     # Áp dụng cấu hình kết nối từ tham số dòng lệnh
     try:
@@ -144,15 +202,18 @@ def main():
         import re
         from urllib.parse import urlparse
         from src.core.config import CONNECTION_CONFIG, save_connection_config
-          # Xử lý tham số VAD (Voice Activity Detection)
+        
+        # Xử lý tham số VAD (Voice Activity Detection)
         from src.core import config
         if args.no_vad:
-            print("\n>> Đang tắt tính năng Voice Activity Detection (VAD)")
+            if debug_mode and not quiet_mode:
+                print("\n>> Đang tắt tính năng Voice Activity Detection (VAD)")
             config.USE_VAD = False
         else:
             # Mặc định là bật
             config.USE_VAD = True
-            print("\n>> Tính năng Voice Activity Detection (VAD) đang bật")
+            if debug_mode and not quiet_mode:
+                print("\n>> Tính năng Voice Activity Detection (VAD) đang bật")
         
         # Function to parse different server address formats
         def parse_server_address(address):
@@ -220,7 +281,8 @@ def main():
         # Xử lý các tham số server tùy chọn
         # Kiểm tra nếu người dùng đã nhập địa chỉ server hình ảnh
         if args.image_server:
-            print(f"\n>> Đang cấu hình kết nối đến server hình ảnh: {args.image_server}")
+            if debug_mode and not quiet_mode:
+                print(f"\n>> Đang cấu hình kết nối đến server hình ảnh: {args.image_server}")
             
             # Parse the provided address
             host, port, use_ngrok, use_ssl = parse_server_address(args.image_server)
@@ -234,15 +296,18 @@ def main():
             # Nếu là URL ngrok, cập nhật ngrok_url
             if use_ngrok:
                 CONNECTION_CONFIG["image_server"]["ngrok_url"] = host
-                print(f"  - Đã phát hiện địa chỉ ngrok: {host}")
-                print(f"  - Sử dụng HTTPS: {'Có' if use_ssl else 'Không'}")
+                if debug_mode and not quiet_mode:
+                    print(f"  - Đã phát hiện địa chỉ ngrok: {host}")
+                    print(f"  - Sử dụng HTTPS: {'Có' if use_ssl else 'Không'}")
             else:
-                print(f"  - Host: {host}")
-                print(f"  - Port: {port}")
+                if debug_mode and not quiet_mode:
+                    print(f"  - Host: {host}")
+                    print(f"  - Port: {port}")
         
         # Kiểm tra nếu người dùng đã nhập địa chỉ server âm thanh
         if args.audio_server:
-            print(f"\n>> Đang cấu hình kết nối đến server âm thanh: {args.audio_server}")
+            if debug_mode and not quiet_mode:
+                print(f"\n>> Đang cấu hình kết nối đến server âm thanh: {args.audio_server}")
             
             # Parse the provided address
             host, port, use_ngrok, use_ssl = parse_server_address(args.audio_server)
@@ -256,19 +321,23 @@ def main():
             # Nếu là URL ngrok, cập nhật ngrok_url
             if use_ngrok:
                 CONNECTION_CONFIG["audio_server"]["ngrok_url"] = host
-                print(f"  - Đã phát hiện địa chỉ ngrok: {host}")
-                print(f"  - Sử dụng HTTPS: {'Có' if use_ssl else 'Không'}")
+                if debug_mode and not quiet_mode:
+                    print(f"  - Đã phát hiện địa chỉ ngrok: {host}")
+                    print(f"  - Sử dụng HTTPS: {'Có' if use_ssl else 'Không'}")
             else:
-                print(f"  - Host: {host}")
-                print(f"  - Port: {port}")
+                if debug_mode and not quiet_mode:
+                    print(f"  - Host: {host}")
+                    print(f"  - Port: {port}")
         
         # Lưu cấu hình mới vào file
-        print("\n>> Đang lưu cấu hình kết nối...")
+        if debug_mode and not quiet_mode:
+            print("\n>> Đang lưu cấu hình kết nối...")
         save_connection_config(CONNECTION_CONFIG)
         
         # Tải lại các URL từ cấu hình mới
         from src.core.config import get_server_url, get_ws_url
-          # Cập nhật lại các biến toàn cục trong module config
+        
+        # Cập nhật lại các biến toàn cục trong module config
         from src.core import config
         config.IMAGE_SERVER_URL = get_server_url("image")
         config.AUDIO_SERVER_URL = get_server_url("audio")
@@ -295,13 +364,14 @@ def main():
                 config.AUDIO_SERVER_PORT = 443 if "https://" in config.AUDIO_SERVER_URL else 80
         
         # Hiển thị thông tin kết nối đã cập nhật
-        print("\n>> Cấu hình kết nối hiện tại:")
-        print(f"• Server hình ảnh: {config.IMAGE_SERVER_HOST}:{config.IMAGE_SERVER_PORT}")
-        print(f"• Server âm thanh: {config.AUDIO_SERVER_HOST}:{config.AUDIO_SERVER_PORT}")
+        if debug_mode and not quiet_mode:
+            print("\n>> Cấu hình kết nối hiện tại:")
+            print(f"• Server hình ảnh: {config.IMAGE_SERVER_HOST}:{config.IMAGE_SERVER_PORT}")
+            print(f"• Server âm thanh: {config.AUDIO_SERVER_HOST}:{config.AUDIO_SERVER_PORT}")
         
     except Exception as e:
-        print(f"\n>> Lỗi khi cập nhật cấu hình kết nối: {e}")
-        if debug_mode:
+        if debug_mode and not quiet_mode:
+            print(f"\n>> Lỗi khi cập nhật cấu hình kết nối: {e}")
             print("Chi tiết lỗi:")
             traceback.print_exc()
     
@@ -314,85 +384,120 @@ def main():
     run_camera_mode = not args.audio_mode  # Chạy camera nếu không phải chỉ chạy audio
     
     # Thông báo về chế độ đang chạy
-    print("\n>> Chế độ hoạt động:")
-    if run_audio_mode and run_camera_mode:
-        print("  - Chạy cả hai chế độ: Truyền âm thanh và hình ảnh")
-    elif run_audio_mode:
-        print("  - Chỉ chạy chế độ truyền âm thanh")
-    elif run_camera_mode:
-        print("  - Chỉ chạy chế độ truyền hình ảnh")
-    else:
-        print("  - Lưu ý: Cả hai chế độ đều bị tắt, sẽ bật cả hai")
-        run_audio_mode = True
-        run_camera_mode = True
+    if debug_mode and not quiet_mode:
+        print("\n>> Chế độ hoạt động:")
+        if run_audio_mode and run_camera_mode:
+            print("  - Chạy cả hai chế độ: Truyền âm thanh và hình ảnh")
+        elif run_audio_mode:
+            print("  - Chỉ chạy chế độ truyền âm thanh")
+        elif run_camera_mode:
+            print("  - Chỉ chạy chế độ truyền hình ảnh")
+        else:
+            print("  - Lưu ý: Cả hai chế độ đều bị tắt, sẽ bật cả hai")
+            run_audio_mode = True
+            run_camera_mode = True
     
     # Start AudioRecorder if enabled
     if run_audio_mode:
-        print("\n>> Starting audio processing module...")
+        if debug_mode and not quiet_mode:
+            print("\n>> Starting audio processing module...")
         try:
             audio_client = AudioRecorder()
             audio_client.start_recording()
-            print("✓ Audio module started successfully")
+            if debug_mode and not quiet_mode:
+                print("✓ Audio module started successfully")
         except Exception as e:
-            print(f"✗ Cannot start audio module: {e}")
-            print("Detailed error:")
-            traceback.print_exc()
+            if not quiet_mode:
+                print(f"✗ Cannot start audio module: {e}")
+            if debug_mode and not quiet_mode:
+                print("Detailed error:")
+                traceback.print_exc()
             audio_client = None
-      # Start CameraClient if enabled
+    
+    # Start CameraClient if enabled
     if run_camera_mode:
-        print("\n>> Starting image processing module...")
+        if debug_mode and not quiet_mode:
+            print("\n>> Starting image processing module...")
         try:
             # Lấy khoảng thời gian chụp ảnh từ cấu hình thay vì tham số dòng lệnh
             from src.core.config import PHOTO_INTERVAL
             
             # Tạo camera client với thiết bị camera cụ thể nếu được chỉ định
             if args.camera_device:
-                print(f">> Using specified camera device: {args.camera_device}")
+                if debug_mode and not quiet_mode:
+                    print(f">> Using specified camera device: {args.camera_device}")
                 camera_client = CameraClient(interval=PHOTO_INTERVAL, camera_device=args.camera_device)
             else:
                 camera_client = CameraClient(interval=PHOTO_INTERVAL)
                 
             if not camera_client.start():
-                print("✗ Camera client start() returned False")
+                if not quiet_mode:
+                    print("✗ Camera client start() returned False")
                 camera_client = None
             else:
-                print("✓ Image module started successfully")
+                if debug_mode and not quiet_mode:
+                    print("✓ Image module started successfully")
         except Exception as e:
-            print(f"✗ Cannot start image module: {e}")
-            print("Detailed error:")
-            traceback.print_exc()
+            if not quiet_mode:
+                print(f"✗ Cannot start image module: {e}")
+            if debug_mode and not quiet_mode:
+                print("Detailed error:")
+                traceback.print_exc()
             camera_client = None
     
     if not audio_client and not camera_client:
         print("\n❌ Error: Cannot start any module. Program will exit.")
         return
     
-    # Print initial information about running modules
-    print("\n" + "-" * 60)
-    print("System Information:")
-    print(f"• Audio mode: {'Running' if audio_client else 'Disabled'}")
-    print(f"• Camera mode: {'Running' if camera_client else 'Disabled'}")
-    print(f"• Connection method: WebSocket")
+    # Cập nhật trạng thái Firebase online khi các module đã khởi động thành công
+    if device_uuid and id_token:
+        if debug_mode and not quiet_mode:
+            print("\n>> Updating Firebase online status...")
+        try:
+            success = update_streaming_status(device_uuid, id_token, is_online=True)
+            if success:
+                if debug_mode and not quiet_mode:
+                    print("✓ Firebase status updated to ONLINE")
+            else:
+                if debug_mode and not quiet_mode:
+                    print("⚠ Failed to update Firebase status")
+        except Exception as e:
+            if debug_mode and not quiet_mode:
+                print(f"⚠ Error updating Firebase status: {e}")
     
-    # Display server information
-    from src.core.config import AUDIO_SERVER_HOST, AUDIO_SERVER_PORT, IMAGE_SERVER_HOST, IMAGE_SERVER_PORT
-    print(f"• Audio server: {AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT}")
-    print(f"• Image server: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
-    
-    if camera_client:
-        # Lấy thông tin khoảng thời gian chụp ảnh từ config
-        from src.core.config import PHOTO_INTERVAL
-        print(f"• Capture photos: every {PHOTO_INTERVAL} seconds")
-    
-    print("-" * 60)
+    # Print initial information about running modules - chỉ khi debug và không quiet
+    if debug_mode and not quiet_mode:
+        print("\n" + "-" * 60)
+        print("System Information:")
+        print(f"• Audio mode: {'Running' if audio_client else 'Disabled'}")
+        print(f"• Camera mode: {'Running' if camera_client else 'Disabled'}")
+        print(f"• Connection method: WebSocket")
+        
+        # Display server information
+        from src.core.config import AUDIO_SERVER_HOST, AUDIO_SERVER_PORT, IMAGE_SERVER_HOST, IMAGE_SERVER_PORT
+        print(f"• Audio server: {AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT}")
+        print(f"• Image server: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
+        
+        if camera_client:
+            # Lấy thông tin khoảng thời gian chụp ảnh từ config
+            from src.core.config import PHOTO_INTERVAL
+            print(f"• Capture photos: every {PHOTO_INTERVAL} seconds")
+        
+        print("-" * 60)
     
     # Hiển thị thông tin về chế độ chạy
     if debug_mode:
-        print("\n>> CHẾ ĐỘ DEBUG ĐANG BẬT - Chỉ hiển thị log, không hiển thị giao diện trạng thái")
-    else:
-        print("\nSystem running. Press Ctrl+C to stop.")
+        if not quiet_mode:
+            print("\n>> CHẾ ĐỘ DEBUG ĐANG BẬT - Chỉ hiển thị log, không hiển thị giao diện trạng thái")
+    elif not quiet_mode:
+        # Chỉ hiển thị thông báo khởi động cơ bản khi không debug và không quiet
+        print("Baby Monitoring System - Starting...")
+        print("Press Ctrl+C to stop.")
         print("Status display will start in 2 seconds...")
         time.sleep(2)  # Give time to read initial info
+    else:
+        # Chế độ quiet - chuyển thẳng vào giao diện
+        time.sleep(0.5)  # Một chút delay để đảm bảo các module đã khởi động
     
     # Update interval
     update_interval = 1.0
@@ -411,6 +516,7 @@ def main():
         status_lines.append("=" * 60)
         
         # Connection status lines - one per server
+        from src.core.config import AUDIO_SERVER_HOST, AUDIO_SERVER_PORT, IMAGE_SERVER_HOST, IMAGE_SERVER_PORT
         audio_ws_status = "Connected" if audio_client and audio_client.ws_connected else "Connecting..."
         status_lines.append(f"• Audio Server: {AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT} | Status: {audio_ws_status}")
         
@@ -495,7 +601,8 @@ def main():
                 
         # TH2: Nếu là chế độ hiển thị đơn giản, cập nhật định kỳ và xóa màn hình
         elif args.simple_display:
-            print("\n>> Sử dụng chế độ hiển thị đơn giản")
+            if debug_mode and not quiet_mode:
+                print("\n>> Sử dụng chế độ hiển thị đơn giản")
             last_display_time = 0
             display_interval = 5  # Cập nhật mỗi 5 giây
             
@@ -517,8 +624,6 @@ def main():
                 
         # TH3: Mặc định - Sử dụng ANSI để hiển thị giao diện động
         else:
-            print("\n>> Bắt đầu hiển thị giao diện trạng thái...")
-            
             # Xóa màn hình và ẩn con trỏ
             print("\033[2J\033[H\033[?25l", end="", flush=True)
             
@@ -547,41 +652,64 @@ def main():
                     # Đợi trước khi cập nhật tiếp theo
                     time.sleep(update_interval)
                 except Exception as e:
-                    print(f"Lỗi hiển thị: {e}")
+                    if debug_mode and not quiet_mode:
+                        print(f"Lỗi hiển thị: {e}")
+                        print("\nChuyển sang chế độ hiển thị đơn giản...")
                     # Chuyển sang chế độ hiển thị đơn giản
-                    print("\nChuyển sang chế độ hiển thị đơn giản...")
                     args.simple_display = True
                     break
                 
     except KeyboardInterrupt:
-        print("\nNhận tín hiệu Ctrl+C, đang dừng hệ thống...")
+        if debug_mode and not quiet_mode:
+            print("\nNhận tín hiệu Ctrl+C, đang dừng hệ thống...")
     except Exception as e:
-        print(f"Lỗi hệ thống: {e}")
-        if debug_mode:
+        if not quiet_mode:
+            print(f"Lỗi hệ thống: {e}")
+        if debug_mode and not quiet_mode:
             traceback.print_exc()
     finally:
         # Hiển thị lại con trỏ
         print("\033[?25h", end="", flush=True)
     
     # Dọn dẹp khi thoát
-    print("\nĐang dừng hệ thống...")
+    if debug_mode and not quiet_mode:
+        print("\nĐang dừng hệ thống...")
+    
+    # Cập nhật trạng thái Firebase offline trước khi dừng
+    if device_uuid and id_token:
+        if debug_mode and not quiet_mode:
+            print(">> Updating Firebase offline status...")
+        try:
+            success = update_streaming_status(device_uuid, id_token, is_online=False)
+            if success:
+                if debug_mode and not quiet_mode:
+                    print("✓ Firebase status updated to OFFLINE")
+            else:
+                if debug_mode and not quiet_mode:
+                    print("⚠ Failed to update Firebase offline status")
+        except Exception as e:
+            if debug_mode and not quiet_mode:
+                print(f"⚠ Error updating Firebase offline status: {e}")
     
     if audio_client:
-        print(">> Stopping audio module...")
+        if debug_mode and not quiet_mode:
+            print(">> Stopping audio module...")
         audio_client.stop_recording()
         audio_client.close()
         
     if camera_client:
-        print(">> Stopping image module...")
+        if debug_mode and not quiet_mode:
+            print(">> Stopping image module...")
         camera_client.stop()
     
-    # Hiển thị trạng thái cuối cùng (chỉ khi không ở chế độ debug)
-    if not debug_mode:
+    # Hiển thị trạng thái cuối cùng (chỉ khi không ở chế độ debug và không quiet)
+    if not debug_mode and not quiet_mode:
         print("\nTrạng thái cuối cùng:")
         final_status = get_status_display()
         print("\n".join(final_status))
     
-    print("\n✓ Hệ thống đã dừng an toàn")
+    if not quiet_mode:
+        print("\n✓ Hệ thống đã dừng an toàn")
     return 0
 
 if __name__ == "__main__":
