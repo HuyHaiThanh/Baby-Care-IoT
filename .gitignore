@@ -20,3 +20,7 @@ build/
 # OS specific files
 .DS_Store
 Thumbs.db
+
+device_uuid.json
+logs/
+photos/
