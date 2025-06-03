@@ -40,7 +40,7 @@ except ImportError:
 # Import các module cần thiết
 print("Importing modules...")
 try:
-    from utils import logger, set_debug_mode
+    from src.utils import logger, set_debug_mode
     print("✓ utils imported")
 except ImportError as e:
     print(f"❌ Error importing utils: {e}")
@@ -48,21 +48,21 @@ except ImportError as e:
     sys.exit(1)
 
 try:
-    from audio_client import AudioRecorder
+    from src.clients import AudioRecorder
     print("✓ audio_client imported")
 except ImportError as e:
     print(f"❌ Error importing audio_client: {e}")
     traceback.print_exc()
 
 try:
-    from camera_client import CameraClient
+    from src.clients import CameraClient
     print("✓ camera_client imported")
 except ImportError as e:
     print(f"❌ Error importing camera_client: {e}")
     traceback.print_exc()
 
 try:
-    from config import IMAGE_SERVER_URL, AUDIO_SERVER_URL
+    from src.core.config import IMAGE_SERVER_URL, AUDIO_SERVER_URL
     print(f"✓ Server URLs loaded: ")
     print(f"  - Image server: {IMAGE_SERVER_URL}")
     print(f"  - Audio server: {AUDIO_SERVER_URL}")
@@ -143,10 +143,9 @@ def main():
         import json
         import re
         from urllib.parse import urlparse
-        from config import CONNECTION_CONFIG, save_connection_config
-        
-        # Xử lý tham số VAD (Voice Activity Detection)
-        import config
+        from src.core.config import CONNECTION_CONFIG, save_connection_config
+          # Xử lý tham số VAD (Voice Activity Detection)
+        from src.core import config
         if args.no_vad:
             print("\n>> Đang tắt tính năng Voice Activity Detection (VAD)")
             config.USE_VAD = False
@@ -268,10 +267,9 @@ def main():
         save_connection_config(CONNECTION_CONFIG)
         
         # Tải lại các URL từ cấu hình mới
-        from config import get_server_url, get_ws_url
-        
-        # Cập nhật lại các biến toàn cục trong module config
-        import config
+        from src.core.config import get_server_url, get_ws_url
+          # Cập nhật lại các biến toàn cục trong module config
+        from src.core import config
         config.IMAGE_SERVER_URL = get_server_url("image")
         config.AUDIO_SERVER_URL = get_server_url("audio")
         config.IMAGE_API_ENDPOINT = f"{config.IMAGE_SERVER_URL}/api/images"
@@ -345,7 +343,7 @@ def main():
         print("\n>> Starting image processing module...")
         try:
             # Lấy khoảng thời gian chụp ảnh từ cấu hình thay vì tham số dòng lệnh
-            from config import PHOTO_INTERVAL
+            from src.core.config import PHOTO_INTERVAL
             
             # Tạo camera client với thiết bị camera cụ thể nếu được chỉ định
             if args.camera_device:
@@ -377,13 +375,13 @@ def main():
     print(f"• Connection method: WebSocket")
     
     # Display server information
-    from config import AUDIO_SERVER_HOST, AUDIO_SERVER_PORT, IMAGE_SERVER_HOST, IMAGE_SERVER_PORT
+    from src.core.config import AUDIO_SERVER_HOST, AUDIO_SERVER_PORT, IMAGE_SERVER_HOST, IMAGE_SERVER_PORT
     print(f"• Audio server: {AUDIO_SERVER_HOST}:{AUDIO_SERVER_PORT}")
     print(f"• Image server: {IMAGE_SERVER_HOST}:{IMAGE_SERVER_PORT}")
     
     if camera_client:
         # Lấy thông tin khoảng thời gian chụp ảnh từ config
-        from config import PHOTO_INTERVAL
+        from src.core.config import PHOTO_INTERVAL
         print(f"• Capture photos: every {PHOTO_INTERVAL} seconds")
     
     print("-" * 60)
