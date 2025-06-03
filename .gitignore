@@ -24,4 +24,5 @@ Thumbs.db
 device_uuid.json
 logs/
 photos/
+backup/
 backups/
