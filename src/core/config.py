@@ -22,8 +22,8 @@ USE_NGROK_FOR_IMAGE = True           # Sử dụng ngrok cho server hình ảnh
 USE_NGROK_FOR_AUDIO = True          # Sử dụng ngrok cho server âm thanh
 
 # URL ngrok (chỉ cần điền nếu USE_NGROK = True)
-IMAGE_NGROK_URL = "ec35-1-53-82-6.ngrok-free.app"
-AUDIO_NGROK_URL = "a579-1-53-82-6.ngrok-free.app"
+IMAGE_NGROK_URL = "20.18.168.113:8080"  
+AUDIO_NGROK_URL = "20.18.168.113:8000"
 
 # Cấu hình Voice Activity Detection (VAD)
 USE_VAD = True                      # Bật/tắt tính năng phát hiện giọng nói
