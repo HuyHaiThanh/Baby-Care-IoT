@@ -72,9 +72,6 @@ class AudioRecorder(BaseClient):
         self.save_counter = 0
         self.dropped_chunks_count = 0
         self.last_ws_status = "Not connected"
-        
-        # Tìm thiết bị USB Audio
-        self.input_device_index = self._find_usb_audio_device()
 
     def start_recording(self):
         """
@@ -100,41 +97,26 @@ class AudioRecorder(BaseClient):
         # Connect to WebSocket first
         self._start_websocket()
         
-        # Kiểm tra xem có thiết bị audio không
-        if self.input_device_index is None:
-            logger.error("Không tìm thấy thiết bị audio để ghi âm!")
-            return False
-        
         self.is_recording = True
         self.audio_buffer = []
         
         def callback(in_data, frame_count, time_info, status):
-            if status:
-                logger.warning(f"Audio callback status: {status}")
             self.audio_buffer.append(np.frombuffer(in_data, dtype=np.int16))
             return (in_data, pyaudio.paContinue)
         
-        try:
-            self.stream = self.audio.open(
-                format=self.format,
-                channels=self.channels,
-                rate=self.sample_rate,
-                input=True,
-                input_device_index=self.input_device_index,
-                frames_per_buffer=self.chunk_size,
-                stream_callback=callback
-            )
-            
-            self.processing_thread = threading.Thread(target=self._process_audio)
-            self.processing_thread.daemon = True
-            self.processing_thread.start()
-            logger.info(f"Started audio recording with USB device {self.input_device_index}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Lỗi khi khởi tạo audio stream: {e}")
-            self.is_recording = False
-            return False
+        self.stream = self.audio.open(
+            format=self.format,
+            channels=self.channels,
+            rate=self.sample_rate,
+            input=True,
+            frames_per_buffer=self.chunk_size,
+            stream_callback=callback
+        )
+        
+        self.processing_thread = threading.Thread(target=self._process_audio)
+        self.processing_thread.daemon = True
+        self.processing_thread.start()
+        logger.info("Started audio recording with sliding window")
 
     def start(self):
         """Start the audio client"""
@@ -359,45 +341,6 @@ class AudioRecorder(BaseClient):
         """
         self.stop_recording()
         self.audio.terminate()
-
-    def _find_usb_audio_device(self):
-        """
-        Tìm thiết bị USB Audio để ghi âm
-        
-        Returns:
-            int: Device index của USB Audio, hoặc None nếu không tìm thấy
-        """
-        logger.info("Đang tìm thiết bị USB Audio...")
-        
-        for i in range(self.audio.get_device_count()):
-            try:
-                device_info = self.audio.get_device_info_by_index(i)
-                device_name = device_info['name'].lower()
-                
-                # Tìm thiết bị có "usb" trong tên và có input channels
-                if ('usb' in device_name or 'composite' in device_name) and device_info['maxInputChannels'] > 0:
-                    logger.info(f"Tìm thấy USB Audio: Device {i} - {device_info['name']}")
-                    logger.info(f"  - Input channels: {device_info['maxInputChannels']}")
-                    logger.info(f"  - Sample rate: {device_info['defaultSampleRate']}")
-                    return i
-                    
-            except Exception as e:
-                logger.warning(f"Lỗi khi kiểm tra device {i}: {e}")
-                continue
-        
-        # Nếu không tìm thấy USB, thử tìm thiết bị có input
-        logger.warning("Không tìm thấy USB Audio, tìm thiết bị input khác...")
-        for i in range(self.audio.get_device_count()):
-            try:
-                device_info = self.audio.get_device_info_by_index(i)
-                if device_info['maxInputChannels'] > 0:
-                    logger.info(f"Sử dụng thiết bị: Device {i} - {device_info['name']}")
-                    return i
-            except:
-                continue
-        
-        logger.error("Không tìm thấy thiết bị audio nào có thể ghi âm!")
-        return None
 
 
 # Test module when run directly
