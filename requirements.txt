@@ -1,18 +1,17 @@
 # Thư viện xử lý âm thanh
-numpy==1.19.5
-scipy==1.5.4
+numpy==1.21.6
+scipy==1.7.3
 PyAudio==0.2.11
 
 # Thư viện xử lý hình ảnh
-Pillow==8.1.0
+Pillow==9.5.0
 
 # Thư viện kết nối mạng
-requests==2.25.1
-websocket-client==1.2.3
+requests==2.28.2
+websocket-client==1.5.1
 
 # Các công cụ tiện ích
-netifaces==0.10.9
-python-dotenv==0.15.0
+python-dotenv==1.0.0
 
-# Camera (chỉ cần trên Raspberry Pi)
+# Camera cho Raspberry Pi
 picamera==1.13.0; sys_platform == 'linux'

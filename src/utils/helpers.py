@@ -6,7 +6,6 @@ import time
 import datetime
 import requests
 import json
-import netifaces
 import socket
 from ..core.config import DEVICE_NAME, DEVICE_ID, CONNECTION_TIMEOUT, MAX_RETRIES, RETRY_DELAY
 from .logger import logger
@@ -21,31 +20,21 @@ def get_ip_addresses():
     ip_list = {}
     
     try:
-        # Sử dụng netifaces để lấy danh sách interfaces mạng
-        interfaces = netifaces.interfaces()
+        # Sử dụng socket để lấy IP địa chỉ chính
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        main_ip = s.getsockname()[0]
+        s.close()
+        ip_list["default"] = main_ip
         
-        for interface in interfaces:
-            # Bỏ qua interface loopback
-            if interface == 'lo':
-                continue
-                
-            ifaddresses = netifaces.ifaddresses(interface)
-            if netifaces.AF_INET in ifaddresses:
-                for link in ifaddresses[netifaces.AF_INET]:
-                    if 'addr' in link:
-                        ip_list[interface] = link['addr']
-    except ImportError:
-        # Nếu không có netifaces, sử dụng socket
-        try:
-            # Kết nối đến Google DNS để lấy IP (không thực sự kết nối)
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip_list["default"] = s.getsockname()[0]
-            s.close()
-        except Exception as e:
-            logger.warning(f"Không thể lấy địa chỉ IP: {e}")
+        # Thêm localhost nếu cần
+        if main_ip != "127.0.0.1":
+            ip_list["localhost"] = "127.0.0.1"
+            
     except Exception as e:
-        logger.warning(f"Lỗi khi lấy địa chỉ IP: {e}")
+        logger.warning(f"Không thể lấy địa chỉ IP: {e}")
+        # Fallback về localhost
+        ip_list["localhost"] = "127.0.0.1"
         
     return ip_list
 
