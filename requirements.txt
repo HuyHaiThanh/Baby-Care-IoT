@@ -1,5 +1,5 @@
-# Thư viện xử lý âm thanh
-numpy==1.21.6
+# Thư viện xử lý âm thanh (compatible với Pi 3B)
+numpy==1.21.1
 scipy==1.7.3
 PyAudio==0.2.11
 
