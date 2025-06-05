@@ -267,7 +267,7 @@ class CameraClient(BaseClient):
             subprocess.run([
                 'fswebcam',
                 '-q',                   # Quiet mode (no banner)
-                '-r', '640x480',        # Lower resolution
+                '-r', '1280x720',        # Lower resolution
                 '--no-banner',          # No banner display
                 '-d', device_path,      # Camera device
                 '--jpeg', '70',         # Reduce JPEG quality to speed up

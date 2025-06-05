@@ -243,8 +243,15 @@ def register_device(device_uuid, id_token, ngrok_url=None):
         "sideThreshold": {"integerValue": "30"},
         "isOnline": {"booleanValue": True},
         "updatedAt": {"timestampValue": current_time},
-        "uri": {"stringValue": ngrok_url if ngrok_url else ""}
+        "uri": {"stringValue": ""}
     }
+    
+    # Xử lý ngrok_url để thêm đuôi playlist.m3u8
+    if ngrok_url:
+        streaming_url = ngrok_url
+        if not streaming_url.endswith('/playlist.m3u8'):
+            streaming_url = f"{ngrok_url}/playlist.m3u8"
+        default_fields["uri"]["stringValue"] = streaming_url
     
     # Giữ lại các giá trị cấu hình hiện có
     existing_fields = {}
@@ -269,7 +276,11 @@ def register_device(device_uuid, id_token, ngrok_url=None):
         
         # Thêm URI nếu có
         if ngrok_url:
-            update_fields["uri"] = {"stringValue": ngrok_url}
+            # Thêm đuôi playlist.m3u8 nếu chưa có
+            streaming_url = ngrok_url
+            if not streaming_url.endswith('/playlist.m3u8'):
+                streaming_url = f"{ngrok_url}/playlist.m3u8"
+            update_fields["uri"] = {"stringValue": streaming_url}
         
         # Thêm các trường mặc định nếu chưa có
         for field, value in default_fields.items():
@@ -307,7 +318,15 @@ def register_device(device_uuid, id_token, ngrok_url=None):
         device_fields = default_fields.copy()
         device_fields["id"] = {"stringValue": device_uuid}
         device_fields["updatedAt"] = {"timestampValue": current_time}
-        device_fields["uri"] = {"stringValue": ngrok_url if ngrok_url else ""}
+        
+        # Xử lý ngrok_url để thêm đuôi playlist.m3u8
+        if ngrok_url:
+            streaming_url = ngrok_url
+            if not streaming_url.endswith('/playlist.m3u8'):
+                streaming_url = f"{ngrok_url}/playlist.m3u8"
+            device_fields["uri"] = {"stringValue": streaming_url}
+        else:
+            device_fields["uri"] = {"stringValue": ""}
         
         # Tạo document với ID = deviceId
         try:
@@ -365,7 +384,11 @@ def update_streaming_status(device_uuid, id_token, is_online=False, ngrok_url=No
     
     # Thêm URI nếu được cung cấp
     if ngrok_url:
-        fields_to_update["uri"] = {"stringValue": ngrok_url}
+        # Thêm đuôi playlist.m3u8 nếu chưa có
+        streaming_url = ngrok_url
+        if not streaming_url.endswith('/playlist.m3u8'):
+            streaming_url = f"{ngrok_url}/playlist.m3u8"
+        fields_to_update["uri"] = {"stringValue": streaming_url}
         
     # Bảo toàn các trường threshold từ thiết bị hiện có
     if exists and device_data and "fields" in device_data:
