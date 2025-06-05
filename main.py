@@ -594,10 +594,6 @@ def main():
             logger.info("Running in debug mode - Only showing logs, no status interface")
             logger.info(f"Audio module: {'Running' if audio_client else 'Disabled'}")
             logger.info(f"Camera module: {'Running' if camera_client else 'Disabled'}")
-            
-            # Chỉ chờ tín hiệu kết thúc
-            while running:
-                time.sleep(1.0)
                 
         # TH2: Nếu là chế độ hiển thị đơn giản, cập nhật định kỳ và xóa màn hình
         elif args.simple_display:
