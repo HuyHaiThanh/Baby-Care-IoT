@@ -145,7 +145,8 @@ class WebSocketClient:
             logger.info(f"Connecting to {self.client_type} WebSocket at {self.ws_url}")
             
             # Reduce verbosity of websocket logging in production
-            websocket.enableTrace(False)
+            # Note: websocket-client library doesn't have enableTrace, use logging level instead
+            logging.getLogger("websocket").setLevel(logging.WARNING)
             
             self.ws = websocket.WebSocketApp(
                 self.ws_url,
