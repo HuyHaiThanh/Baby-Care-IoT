@@ -33,8 +33,10 @@ try:
     from picamera import PiCamera
     PICAMERA_AVAILABLE = True
     logger.info("PiCamera detected.")
-except ImportError:
-    logger.warning("PiCamera not found. Will use USB camera if available.")
+except (ImportError, OSError) as e:
+    logger.warning(f"PiCamera not available: {e}. Will use USB camera if available.")
+    PiCamera = None
+    PICAMERA_AVAILABLE = False
 
 
 class CameraClient(BaseClient):
