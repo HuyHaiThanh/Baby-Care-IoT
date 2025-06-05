@@ -10,16 +10,16 @@ import socket
 
 # THAY ĐỔI CÁC ĐỊA CHỈ IP & PORT Ở ĐÂY
 # Server hình ảnh - Thay đổi giá trị bên phải dấu = để cập nhật
-IMAGE_SERVER_HOST = "192.168.5.50"     # Địa chỉ IP server hình ảnh
+IMAGE_SERVER_HOST = "20.18.168.113"     # Địa chỉ IP server hình ảnh
 IMAGE_SERVER_PORT = 8080              # Port server hình ảnh
 
 # Server âm thanh - Thay đổi giá trị bên phải dấu = để cập nhật
-AUDIO_SERVER_HOST = "192.168.5.51"     # Địa chỉ IP server âm thanh
+AUDIO_SERVER_HOST = "20.18.168.113"     # Địa chỉ IP server âm thanh
 AUDIO_SERVER_PORT = 8000              # Port server âm thanh
 
 # Sử dụng ngrok - Đặt thành True nếu muốn kết nối qua ngrok, False để kết nối trực tiếp qua IP
 USE_NGROK_FOR_IMAGE = False           # Sử dụng ngrok cho server hình ảnh
-USE_NGROK_FOR_AUDIO = False          # Sử dụng ngrok cho server âm thanh
+USE_NGROK_FOR_AUDIO = False         # Sử dụng ngrok cho server âm thanh
 
 # URL ngrok (chỉ cần điền nếu USE_NGROK = True)
 IMAGE_NGROK_URL = "20.18.168.113:8080"  
