@@ -9,8 +9,11 @@ import threading
 import queue
 import base64
 import json
+import os
+import sys
 from io import BytesIO
 from scipy import signal
+from contextlib import contextmanager
 
 from ..core.config import (
     AUDIO_WS_ENDPOINT, SAMPLE_RATE, CHANNELS, 
@@ -29,6 +32,65 @@ class AudioRecorder(BaseClient):
     With default settings, it creates 3-second audio chunks that slide by 1 second,
     meaning there is a 2-second overlap between consecutive chunks.
     """
+    
+    @staticmethod
+    @contextmanager
+    def suppress_alsa_errors():
+        """Context manager to suppress ALSA error messages"""
+        # Save the original stderr
+        original_stderr = os.dup(2)
+        # Redirect stderr to /dev/null (or NUL on Windows)
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, 2)
+        try:
+            yield
+        finally:
+            # Restore original stderr
+            os.dup2(original_stderr, 2)
+            os.close(devnull)
+            os.close(original_stderr)
+    
+    def find_usb_audio_device(self):
+        """
+        Find USB audio input device index.
+        
+        Returns:
+            int: Device index of USB audio device, or None if not found
+        """
+        try:
+            with self.suppress_alsa_errors():
+                audio = pyaudio.PyAudio()
+                device_count = audio.get_device_count()
+                
+                logger.info(f"Scanning {device_count} audio devices for USB microphone...")
+                
+                for i in range(device_count):
+                    try:
+                        device_info = audio.get_device_info_by_index(i)
+                        device_name = device_info.get('name', '').lower()
+                        max_input_channels = device_info.get('maxInputChannels', 0)
+                        
+                        logger.info(f"Device {i}: {device_info.get('name', 'Unknown')} - Input channels: {max_input_channels}")
+                        
+                        # Look for USB audio devices with input capability
+                        if (max_input_channels > 0 and 
+                            ('usb' in device_name or 'composite' in device_name or 
+                             'microphone' in device_name or 'mic' in device_name)):
+                            logger.info(f"Found USB audio input device: {device_info['name']} (Index: {i})")
+                            audio.terminate()
+                            return i
+                            
+                    except Exception as e:
+                        logger.debug(f"Error checking device {i}: {e}")
+                        continue
+                
+                audio.terminate()
+                logger.warning("No USB audio input device found, will use default device")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error finding USB audio device: {e}")
+            return None
     def __init__(self, chunk_size=1024, sample_rate=SAMPLE_RATE, channels=CHANNELS, 
                  window_size=AUDIO_DURATION, slide_size=AUDIO_SLIDE_SIZE, format=pyaudio.paInt16,
                  max_queue_size=10):
@@ -61,7 +123,11 @@ class AudioRecorder(BaseClient):
         self.total_chunks = 0
         self.vad_active_chunks = 0
         
-        self.audio = pyaudio.PyAudio()
+        # Find USB audio device
+        self.usb_device_index = self.find_usb_audio_device()
+        
+        with self.suppress_alsa_errors():
+            self.audio = pyaudio.PyAudio()
         self.stream = None
         self.is_recording = False
         self.audio_buffer = []
@@ -104,14 +170,32 @@ class AudioRecorder(BaseClient):
             self.audio_buffer.append(np.frombuffer(in_data, dtype=np.int16))
             return (in_data, pyaudio.paContinue)
         
-        self.stream = self.audio.open(
-            format=self.format,
-            channels=self.channels,
-            rate=self.sample_rate,
-            input=True,
-            frames_per_buffer=self.chunk_size,
-            stream_callback=callback
-        )
+        try:
+            # Prepare stream parameters
+            stream_params = {
+                'format': self.format,
+                'channels': self.channels,
+                'rate': self.sample_rate,
+                'input': True,
+                'frames_per_buffer': self.chunk_size,
+                'stream_callback': callback
+            }
+            
+            # Add USB device index if found
+            if self.usb_device_index is not None:
+                stream_params['input_device_index'] = self.usb_device_index
+                logger.info(f"Using USB audio device index: {self.usb_device_index}")
+            else:
+                logger.info("Using default audio input device")
+            
+            # Create audio stream with ALSA error suppression
+            with self.suppress_alsa_errors():
+                self.stream = self.audio.open(**stream_params)
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize audio stream: {e}")
+            self.is_recording = False
+            return
         
         self.processing_thread = threading.Thread(target=self._process_audio)
         self.processing_thread.daemon = True
@@ -319,8 +403,12 @@ class AudioRecorder(BaseClient):
         """
         self.is_recording = False
         if self.stream:
-            self.stream.stop_stream()
-            self.stream.close()
+            try:
+                with self.suppress_alsa_errors():
+                    self.stream.stop_stream()
+                    self.stream.close()
+            except Exception as e:
+                logger.error(f"Error stopping audio stream: {e}")
         
         # Close WebSocket
         self._stop_websocket()
@@ -340,7 +428,11 @@ class AudioRecorder(BaseClient):
         Close all resources and terminate PyAudio.
         """
         self.stop_recording()
-        self.audio.terminate()
+        try:
+            with self.suppress_alsa_errors():
+                self.audio.terminate()
+        except Exception as e:
+            logger.error(f"Error terminating PyAudio: {e}")
 
 
 # Test module when run directly
