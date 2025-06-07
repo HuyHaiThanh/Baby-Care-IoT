@@ -269,7 +269,7 @@ class CameraClient(BaseClient):
                 '-q',                   # Quiet mode (no banner)
                 '-r', '640x360',        # Lower resolution
                 '--no-banner',          # No banner display
-                '-d', device_path,      # Camera device
+                '-d', '/dev/video17',      # Camera device
                 '--jpeg', '70',         # Reduce JPEG quality to speed up
                 '-F', '2',              # Reduce frames to skip (speed up)
                 temp_path               # Output file path
